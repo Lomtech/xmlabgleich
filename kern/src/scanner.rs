@@ -20,6 +20,12 @@ pub trait Beobachter {
     /// Ein Stück Text. Kann je Element mehrfach kommen, wenn der Text über
     /// eine Blockgrenze läuft.
     fn text(&mut self, teil: &[u8]);
+    /// Ein Attribut des zuletzt geöffneten Elements.
+    ///
+    /// Bei ISO 20022 steckt die Währung im Attribut — `<Amt Ccy="EUR">12.34`.
+    /// Wer nur Elementinhalte vergleicht, hält Beträge ohne Währung
+    /// gegeneinander und merkt eine Umstellung von EUR auf USD nicht.
+    fn attribut(&mut self, _name: &[u8], _wert: &[u8]) {}
 }
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -34,6 +40,11 @@ enum Zustand {
     SchlussName,
     /// Hinter dem Namen: Attribute, bis `>` oder `/>`.
     ImTag,
+    /// Im Namen eines Attributs.
+    AttributName,
+    /// Zwischen Attributname und Anführungszeichen (Gleichheitszeichen,
+    /// Leerraum).
+    VorAttributWert,
     /// In einem Attributwert; das Zeichen ist das öffnende Anführungszeichen.
     /// Nötig, weil `>` innerhalb eines Attributwerts erlaubt ist.
     ImAttribut(u8),
@@ -74,6 +85,14 @@ pub struct Scanner {
     name_gemeldet: bool,
     /// Selbstschließendes Element erkannt (`/` unmittelbar vor `>`).
     selbstschluss: bool,
+    /// Name und Wert des laufenden Attributs; beide können über eine
+    /// Blockgrenze reichen.
+    attr_name: Vec<u8>,
+    attr_wert: Vec<u8>,
+    /// War das Attribut eine Namensraum-Erklärung? Muss beim Verwerfen des
+    /// Präfixes festgehalten werden: Aus `xmlns:ns` wird sonst `ns`, und die
+    /// Erklärung sähe aus wie ein gewöhnliches Attribut.
+    attr_ist_xmlns: bool,
 }
 
 impl Default for Scanner {
@@ -94,6 +113,9 @@ impl Scanner {
             fenster_len: 0,
             name_gemeldet: false,
             selbstschluss: false,
+            attr_name: Vec::new(),
+            attr_wert: Vec::new(),
+            attr_ist_xmlns: false,
         }
     }
 
@@ -209,17 +231,67 @@ impl Scanner {
                 Zustand::ImTag => {
                     let c = daten[i];
                     match c {
-                        b'"' | b'\'' => {
-                            self.zustand = Zustand::ImAttribut(c);
-                            self.selbstschluss = false;
-                        }
                         b'/' => self.selbstschluss = true,
                         b'>' => {
                             self.nach_tagende(b);
                             self.zustand = Zustand::Text;
                         }
                         c if c.is_ascii_whitespace() => {}
-                        _ => self.selbstschluss = false,
+                        _ => {
+                            // Beginn eines Attributnamens. Der Elementbeginn
+                            // muss vorher gemeldet sein, damit der Beobachter
+                            // das Attribut zuordnen kann.
+                            self.melde_beginn(b);
+                            self.selbstschluss = false;
+                            self.attr_name.clear();
+                            self.attr_wert.clear();
+                            self.attr_ist_xmlns = false;
+                            self.attr_name.push(c);
+                            self.zustand = Zustand::AttributName;
+                        }
+                    }
+                    i += 1;
+                }
+
+                Zustand::AttributName => {
+                    let c = daten[i];
+                    if c == b'=' || c.is_ascii_whitespace() {
+                        self.zustand = Zustand::VorAttributWert;
+                    } else if c == b'>' {
+                        // Attribut ohne Wert — kommt in XML nicht vor, in
+                        // freier Wildbahn trotzdem.
+                        self.attr_name.clear();
+                        self.nach_tagende(b);
+                        self.zustand = Zustand::Text;
+                    } else if self.attr_name.len() < NAME_GROESSE {
+                        // Namensraum-Präfix verwerfen, wie bei Elementen —
+                        // vorher aber festhalten, ob es eine
+                        // Namensraum-Erklärung war.
+                        if c == b':' {
+                            if self.attr_name == b"xmlns" {
+                                self.attr_ist_xmlns = true;
+                            }
+                            self.attr_name.clear();
+                        } else {
+                            self.attr_name.push(c);
+                        }
+                    }
+                    i += 1;
+                }
+
+                Zustand::VorAttributWert => {
+                    let c = daten[i];
+                    if c == b'"' || c == b'\'' {
+                        self.zustand = Zustand::ImAttribut(c);
+                    } else if c == b'>' {
+                        self.attr_name.clear();
+                        self.nach_tagende(b);
+                        self.zustand = Zustand::Text;
+                    } else if !c.is_ascii_whitespace() && c != b'=' {
+                        // Doch kein Wert — das war schon der nächste Name.
+                        self.attr_name.clear();
+                        self.attr_name.push(c);
+                        self.zustand = Zustand::AttributName;
                     }
                     i += 1;
                 }
@@ -227,9 +299,26 @@ impl Scanner {
                 Zustand::ImAttribut(anfuehrung) => {
                     while i < daten.len() {
                         if daten[i] == anfuehrung {
+                            // Namensraum-Erklärungen sind Metadaten des
+                            // Dokuments, keine Daten — sie dürfen den Abdruck
+                            // nicht verändern, sonst hinge er am Präfix.
+                            if !self.attr_name.is_empty()
+                                && self.attr_name != b"xmlns"
+                                && !self.attr_ist_xmlns
+                            {
+                                let name = std::mem::take(&mut self.attr_name);
+                                let wert = std::mem::take(&mut self.attr_wert);
+                                b.attribut(&name, &wert);
+                            }
+                            self.attr_name.clear();
+                            self.attr_wert.clear();
+                            self.attr_ist_xmlns = false;
                             self.zustand = Zustand::ImTag;
                             i += 1;
                             break;
+                        }
+                        if self.attr_wert.len() < 4096 {
+                            self.attr_wert.push(daten[i]);
                         }
                         i += 1;
                     }

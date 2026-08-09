@@ -9,10 +9,12 @@
 //!
 //! Weichen beide ab, kreuzen sie sich in der Zelle. Der Rand kostet N + M
 //! Werte statt N × M einer vollen Matrix; gemessen sind das bei 4096 Eimern
-//! und 58 Spalten 83 kB gegen 3,8 MB. Dafür ist er ab zwei Fehlern nicht mehr
-//! eindeutig: k Fehler ergeben k² Kandidaten, von denen k echt sind. Bei
-//! Übernahmefehlern, die fast immer eine ganze Spalte betreffen, spielt das
-//! keine Rolle.
+//! und 58 Spalten 83 kB gegen 3,8 MB.
+//!
+//! Rechnerisch ist der Rand ab zwei Fehlern mehrdeutig — k Fehler ergeben k²
+//! Kandidaten, von denen k echt sind. In der Anwendung fällt das nicht ins
+//! Gewicht, weil die Kandidaten anschließend nachgelesen werden
+//! (`einzelheiten`): Der Rand grenzt ein, der zweite Durchlauf entscheidet.
 
 use crate::scanner::Beobachter;
 use std::collections::HashMap;
@@ -491,6 +493,38 @@ impl Beobachter for Abdruck {
         }
     }
 
+    /// Attribute zählen wie Felder, mit `@` im Pfad — `<Amt Ccy="EUR">` wird
+    /// zu `.../Amt@Ccy`. Ohne sie verglichen man bei ISO 20022 Beträge ohne
+    /// ihre Währung.
+    fn attribut(&mut self, name: &[u8], wert: &[u8]) {
+        if self.im_datensatz_ab.is_none() {
+            return;
+        }
+        let mut pfad = self.pfad_ab_datensatz();
+        pfad.push(b'@');
+        pfad.extend_from_slice(name);
+
+        let normal = normalisiere(wert);
+        let werthash = if normal.is_empty() {
+            fnv(b"\x00leer")
+        } else {
+            fnv(&normal)
+        };
+        self.blaetter += 1;
+
+        let nummer = match self.feld_nummer.get(&pfad) {
+            Some(n) => *n,
+            None => {
+                let n = self.feld_index.len() as u32;
+                self.feld_index.push(pfad.clone());
+                self.feld_nummer.insert(pfad.clone(), n);
+                n
+            }
+        };
+        self.laufende_folge.push(nummer);
+        self.laufende_felder.push((pfad, werthash));
+    }
+
     fn text(&mut self, teil: &[u8]) {
         for &c in teil {
             if c.is_ascii_whitespace() {
@@ -518,6 +552,28 @@ impl Beobachter for Abdruck {
             self.text_hat_inhalt = true;
         }
     }
+}
+
+/// Dieselbe Zusammenfassung, die auch der laufende Texthash vornimmt:
+/// Leerraum an den Rändern weg, innen zu einem Leerzeichen. Sonst hinge der
+/// Abdruck an der Formatierung.
+fn normalisiere(roh: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(roh.len());
+    let mut wartend = false;
+    for &c in roh {
+        if c.is_ascii_whitespace() {
+            if !out.is_empty() {
+                wartend = true;
+            }
+            continue;
+        }
+        if wartend {
+            out.push(b' ');
+            wartend = false;
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn zerlege_pfad(s: &str) -> Vec<Vec<u8>> {

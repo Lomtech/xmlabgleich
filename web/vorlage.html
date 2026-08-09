@@ -657,10 +657,13 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   }
 
   t.push(`<h2>Nicht geprüft</h2><div class="karte"><ul class="grenzen">
-    <li>Attribute; verglichen werden Elementinhalte.</li>
-    <li>Ab zwei betroffenen Feldern ist die Kreuzung nicht mehr eindeutig:
-        Zeilen- und Spaltenachse markieren dann mehr Stellen, als tatsächlich abweichen.</li>
-    <li>Die Prüfwerte schützen vor Versehen, nicht vor absichtlicher Veränderung.</li>
+    <li>Die Prüfwerte schützen vor Versehen, nicht vor absichtlicher Veränderung —
+        FNV-1a ist kein kryptographisches Verfahren.</li>
+    <li>Wiederholgruppen werden noch als eine Spalte gezählt: Alle Bezeichner eines
+        Datensatzes landen in demselben Feldpfad. Werden zwei davon untereinander
+        vertauscht, bleibt die Summe gleich.</li>
+    <li>Entitäten (<code>&amp;amp;</code> und dergleichen) werden nicht aufgelöst,
+        sondern verglichen wie sie dastehen.</li>
     ${e.a.ohneSchluessel || e.b.ohneSchluessel
       ? `<li><b>${zahl(e.a.ohneSchluessel)} bzw. ${zahl(e.b.ohneSchluessel)} Datensätze ohne Schlüsselwert</b> —
          für sie gilt die Zeilenachse nicht.</li>` : ""}

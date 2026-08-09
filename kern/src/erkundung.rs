@@ -184,6 +184,19 @@ impl Beobachter for Erkundung {
         self.text_hat_inhalt = false;
     }
 
+    fn attribut(&mut self, name: &[u8], _wert: &[u8]) {
+        let mut p = self.voller_pfad();
+        p.push(b'@');
+        p.extend_from_slice(name);
+        let tiefe = self.pfad.len();
+        let e = self.pfade.entry(p).or_insert(Vorkommen {
+            tiefe,
+            ..Default::default()
+        });
+        e.anzahl += 1;
+        e.blatt = true;
+    }
+
     fn text(&mut self, teil: &[u8]) {
         for &c in teil {
             if c.is_ascii_whitespace() {

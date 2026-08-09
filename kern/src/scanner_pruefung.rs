@@ -42,6 +42,13 @@ impl Beobachter for Mitschrift {
         self.laufender_text
             .push_str(&String::from_utf8_lossy(teil));
     }
+    fn attribut(&mut self, name: &[u8], wert: &[u8]) {
+        self.zeilen.push(format!(
+            "attr {}={}",
+            String::from_utf8_lossy(name),
+            String::from_utf8_lossy(wert)
+        ));
+    }
 }
 
 pub fn lies(daten: &[u8], blockgroesse: usize) -> Vec<String> {
@@ -190,6 +197,49 @@ mod tests {
                 "zu"
             ]
         );
+    }
+
+    // ----------------------------------------------------------- Attribute
+
+    #[test]
+    fn attribute_werden_gemeldet() {
+        let z = lies(br#"<A><B art="x" nr='7'>Wert</B></A>"#, 5);
+        assert_eq!(
+            z,
+            vec!["auf  A", "auf  B", "attr art=x", "attr nr=7", "text Wert", "zu", "zu"]
+        );
+    }
+
+    #[test]
+    fn attribute_ueberstehen_blockgrenzen() {
+        blockgroessen_unabhaengig(r#"<A><B art="ein langer Wert" nr="42"/><C d="x">t</C></A>"#);
+    }
+
+    /// Der Fall aus ISO 20022: Die Währung steht im Attribut. Zwei Beträge
+    /// mit verschiedener Währung dürfen nicht als gleich gelten.
+    #[test]
+    fn waehrung_im_attribut_faellt_auf() {
+        let eur = lies(br#"<Ntry><Amt Ccy="EUR">1234.56</Amt></Ntry>"#, 6);
+        let usd = lies(br#"<Ntry><Amt Ccy="USD">1234.56</Amt></Ntry>"#, 6);
+        assert_ne!(eur, usd, "die Währung darf nicht unter den Tisch fallen");
+        assert!(eur.contains(&"attr Ccy=EUR".to_string()));
+    }
+
+    /// Namensraum-Erklärungen sind Metadaten des Dokuments. Sie dürfen den
+    /// Abdruck nicht verändern, sonst hinge er am gewählten Präfix.
+    #[test]
+    fn xmlns_wird_nicht_als_attribut_gemeldet() {
+        let mit = lies(br#"<A xmlns="http://beispiel.invalid/v1"><B>x</B></A>"#, 7);
+        let ohne = lies(br#"<A><B>x</B></A>"#, 7);
+        assert_eq!(mit, ohne);
+    }
+
+    /// Ein `>` im Attributwert darf weder das Tag beenden noch den Wert
+    /// zerschneiden.
+    #[test]
+    fn spitzklammer_im_attributwert_bleibt_erhalten() {
+        let z = lies(br#"<A><B bed="x > y">t</B></A>"#, 4);
+        assert!(z.contains(&"attr bed=x > y".to_string()), "{z:?}");
     }
 
     /// Ein Element, dessen Name genau am Dateiende aufhört.

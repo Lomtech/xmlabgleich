@@ -502,3 +502,55 @@ fn wiederholte_pfade_gehen_beide_ein() {
     let n2 = a2.spalten.get(b"KZ".as_slice()).unwrap().anzahl;
     assert_eq!((n1, n2), (1, 2));
 }
+
+// ------------------------------------------------------------- Attribute
+
+/// Der Fall aus ISO 20022: Die Währung steht im Attribut. Zwei Beträge mit
+/// verschiedener Währung dürfen nicht als gleich durchgehen.
+#[test]
+fn waehrung_im_attribut_faellt_auf() {
+    let eur = "<INVESTMENTS><INVESTMENT><ID>A1</ID><BETRAG Ccy=\"EUR\">100.00</BETRAG></INVESTMENT></INVESTMENTS>";
+    let usd = "<INVESTMENTS><INVESTMENT><ID>A1</ID><BETRAG Ccy=\"USD\">100.00</BETRAG></INVESTMENT></INVESTMENTS>";
+    let (x, y) = (abdruck_von(eur, 8), abdruck_von(usd, 8));
+    assert_ne!(
+        x.gesamt().wert,
+        y.gesamt().wert,
+        "EUR gegen USD muss auffallen"
+    );
+    assert!(
+        x.spalten.contains_key(b"BETRAG@Ccy".as_slice()),
+        "das Attribut muss eine eigene Spalte sein: {:?}",
+        x.spalten.keys().map(|k| String::from_utf8_lossy(k).to_string()).collect::<Vec<_>>()
+    );
+}
+
+/// Ein fehlendes Attribut ist etwas anderes als ein leeres.
+#[test]
+fn fehlendes_attribut_faellt_auf() {
+    let mit = "<INVESTMENTS><INVESTMENT><ID>A1</ID><B a=\"x\">1</B></INVESTMENT></INVESTMENTS>";
+    let ohne = "<INVESTMENTS><INVESTMENT><ID>A1</ID><B>1</B></INVESTMENT></INVESTMENTS>";
+    let (x, y) = (abdruck_von(mit, 7), abdruck_von(ohne, 7));
+    assert_ne!(x.gesamt().struktur, y.gesamt().struktur);
+}
+
+/// Attribute dürfen von der Blockgröße genauso unabhängig sein wie alles
+/// andere — der Wert kann mitten im Puffer enden.
+#[test]
+fn attribute_ueberstehen_blockgrenzen() {
+    let x = "<INVESTMENTS><INVESTMENT><ID>A1</ID><B lang=\"ein ziemlich langer Attributwert\">1</B></INVESTMENT></INVESTMENTS>";
+    let erwartet = kennwerte(&abdruck_von(x, x.len()));
+    for g in [1, 2, 3, 5, 9, 17, 64] {
+        assert_eq!(kennwerte(&abdruck_von(x, g)), erwartet, "Blockgröße {g}");
+    }
+}
+
+/// Namensraum-Erklärungen sind Metadaten und dürfen nichts ändern.
+#[test]
+fn xmlns_veraendert_den_abdruck_nicht() {
+    let ohne = dok(&[&satz("A1", "BOND", "100.00")]);
+    let mit = "<INVESTMENTS xmlns=\"http://beispiel.invalid/v1\" xmlns:x=\"http://beispiel.invalid/x\"><INVESTMENT><ID>A1</ID><TYP>BOND</TYP><BETRAG>100.00</BETRAG></INVESTMENT></INVESTMENTS>";
+    assert_eq!(
+        abdruck_von(&ohne, 6).gesamt().wert,
+        abdruck_von(mit, 6).gesamt().wert
+    );
+}
