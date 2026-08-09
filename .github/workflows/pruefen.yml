@@ -1,9 +1,12 @@
-# Prüft den Kern bei jeder Änderung und stellt sicher, dass die
-# veröffentlichte Datei zum Quelltext passt.
+# Prüft den Kern und stellt sicher, dass die veröffentlichte Datei zum Stand
+# des Quelltextes passt.
 #
-# Der zweite Teil ist der wichtigere: index.html enthält das übersetzte
-# WASM-Modul als Base64. Wer den Rust-Kern ändert und das Bauen vergisst,
-# veröffentlicht sonst weiter den alten Stand — ohne dass es auffällt.
+# Verglichen wird der **Quelltexthash**, nicht die Datei selbst: Rust-Übersetzungen
+# sind über verschiedene Werkzeugversionen hinweg nicht byteweise gleich — dasselbe
+# Modul war unter macOS 224.495 und unter Linux 223.309 Byte groß. Ein Prüflauf auf
+# Byte-Identität schlägt deshalb immer fehl, egal ob etwas vergessen wurde oder
+# nicht. Was tatsächlich schiefgehen kann, ist etwas anderes: jemand ändert den
+# Quelltext und liefert die gebaute Datei nicht mit. Genau das findet der Hash.
 name: prüfen
 
 on:
@@ -16,14 +19,33 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: rustup target add wasm32-unknown-unknown
+
       - name: Prüfungen
         run: cargo test --manifest-path kern/Cargo.toml
-      - name: Neu bauen und mit dem veröffentlichten Stand vergleichen
+
+      - name: Passt index.html zum Quelltext?
         run: |
-          cp index.html /tmp/veroeffentlicht.html
-          ./bauen.sh
-          if ! cmp -s /tmp/veroeffentlicht.html index.html; then
-            echo "index.html passt nicht zum Quelltext — bitte ./bauen.sh laufen lassen und mitliefern."
+          erwartet=$(cat kern/src/*.rs kern/Cargo.toml web/vorlage.html | sha256sum | cut -c1-16)
+          gefunden=$(grep -o 'name="quelltext" content="[0-9a-f]*"' index.html | grep -o '[0-9a-f]\{16\}' || true)
+          echo "  Quelltext:     $erwartet"
+          echo "  in index.html: ${gefunden:-— fehlt —}"
+          if [ "$erwartet" != "$gefunden" ]; then
+            echo "index.html stammt aus einem anderen Stand — bitte ./bauen.sh laufen lassen und mitliefern."
             exit 1
           fi
+
+      - name: Ist das eingebettete Modul lauffähig?
+        run: |
+          # Kein Byte-Vergleich, aber die Gewissheit, dass überhaupt ein
+          # gültiges WASM-Modul in der Datei steckt.
+          python3 - <<'PY'
+          import base64, pathlib, re, sys
+          html = pathlib.Path("index.html").read_text(encoding="utf-8")
+          m = re.search(r'WASM_BASE64 = "([A-Za-z0-9+/=]+)"', html)
+          if not m:
+              sys.exit("kein eingebettetes Modul gefunden")
+          roh = base64.b64decode(m.group(1))
+          if roh[:4] != b"\x00asm":
+              sys.exit("das eingebettete Modul ist kein WebAssembly")
+          print(f"  eingebettetes Modul: {len(roh)} Byte, gültige Kennung")
+          PY
