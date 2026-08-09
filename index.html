@@ -360,7 +360,8 @@ $("starten").addEventListener("click", async () => {
   // und die einzige Frage, die zählt, lautet: was steht da anders? Der erste
   // Durchlauf hat die Suche bereits auf wenige Datensätze eingegrenzt.
   if (!e.bestanden && schluessel && e.spalten.length && e.eimer.length) {
-    await zeigeEinzelheiten(w, e, konfig);
+    const gefunden = await zeigeEinzelheiten(w, e, konfig);
+    standSpeichern({ bericht: e, einzelheiten: gefunden ?? null });
   }
 });
 
@@ -385,6 +386,9 @@ async function einzelheitenVon(w, datei, konfig, eimer, pfade, tab) {
 }
 
 async function zeigeEinzelheiten(w, e, konfig) {
+  // Liefert die gefundenen Unterschiede zurück — sie gehören in den
+  // gemerkten Stand, sonst fehlt nach einem Neuladen genau die Angabe,
+  // wegen der man den Bericht aufschlägt.
   const ziel = document.createElement("div");
   ziel.innerHTML = `<h2>Welcher Wert?</h2>
     <div class="karte hinweis"><span class="loading">Die betroffenen Datensätze werden gelesen …</span></div>`;
@@ -428,7 +432,7 @@ async function zeigeEinzelheiten(w, e, konfig) {
     ziel.innerHTML = `<h2>Welcher Wert?</h2>
       <div class="karte hinweis">Die betroffenen Datensätze ließen sich nicht auflösen —
       möglicherweise ist der Schlüssel nicht eindeutig.</div>`;
-    return;
+    return [];
   }
 
   const t = [`<h2>Welcher Wert?</h2>
@@ -459,6 +463,35 @@ async function zeigeEinzelheiten(w, e, konfig) {
   }
   t.push(`</tbody></table></div>`);
   ziel.innerHTML = t.join("");
+  return { unterschiede: unterschiede.slice(0, 200), gruppen, gekuerzt };
+}
+
+/** Zeichnet einen gemerkten Klartext-Nachlauf ohne erneutes Lesen. */
+function zeigeGemerkteEinzelheiten(gemerkt, ziel) {
+  if (!gemerkt?.unterschiede?.length) return;
+  const t = [`<h2>Welcher Wert?</h2>
+    <div class="karte hinweis" style="margin-bottom:.75rem">
+      ${viele(gemerkt.unterschiede.length, "Stelle unterscheidet", "Stellen unterscheiden")} sich —
+      ${gemerkt.gruppen === 1 ? "aus der einen betroffenen Gruppe" : `aus ${zahl(gemerkt.gruppen)} betroffenen Gruppen`}.
+      ${gemerkt.gekuerzt ? "<b>Die Liste ist gekürzt.</b>" : ""}
+    </div>
+    <div class="rahmen"><table><thead><tr>
+      <th>Schlüssel</th><th>Feld</th><th>Quelle</th><th>Ziel</th>
+    </tr></thead><tbody>`];
+  for (const z of gemerkt.unterschiede) {
+    t.push(`<tr>
+      <td class="pfad">${escape(z.schluessel)}</td>
+      <td class="pfad" style="font-size:.8em;opacity:.75">${
+        z.tabelle ? `<span class="hinweis">${escape(kurzerPfad(z.tabelle))} ▸ </span>` : ""
+      }${escape(kurzerPfad(z.pfad))}</td>
+      <td>${hervorheben(z.a, z.b)}</td>
+      <td>${hervorheben(z.b, z.a)}</td>
+    </tr>`);
+  }
+  t.push(`</tbody></table></div>`);
+  const kasten = document.createElement("div");
+  kasten.innerHTML = t.join("");
+  ziel.append(kasten);
 }
 
 /** Letztes Pfadstück, der Rest gekürzt — die vollen Pfade sind sehr lang. */
@@ -954,8 +987,38 @@ function escape(s) {
 const LAGER = "xmlabgleich";
 const SCHLUESSEL_STAND = LAGER + ":stand";
 
+/**
+ * Wirft aus einem Bericht heraus, was nur zum Rechnen gebraucht wurde.
+ *
+ * Die Eimerlisten sind bei sechs Tabellen und 4096 Eimern über eine Million
+ * Zahlen — sie sprengen den Speicher des Browsers, und angezeigt wird davon
+ * nichts. Was bleibt, ist der Bericht selbst.
+ */
+function schlank(bericht) {
+  if (!bericht) return null;
+  const ohneEimer = (abdruck) => abdruck && ({
+    ...abdruck,
+    tabellen: (abdruck.tabellen ?? []).map(({ eimer, ...rest }) => rest),
+    ersteSchluessel: (abdruck.ersteSchluessel ?? []).slice(0, 50),
+  });
+  return {
+    ...bericht,
+    a: ohneEimer(bericht.a),
+    b: ohneEimer(bericht.b),
+    tabellen: (bericht.tabellen ?? []).map(tb => ({
+      ...tb,
+      ta: tb.ta && { ...tb.ta, eimer: undefined },
+      tb: tb.tb && { ...tb.tb, eimer: undefined },
+      eimer: tb.eimer.slice(0, 50),
+    })),
+    eimer: (bericht.eimer ?? []).slice(0, 50),
+    spalten: (bericht.spalten ?? []).slice(0, 300),
+  };
+}
+
 function standSpeichern(zusatz = {}) {
   try {
+    if (zusatz.bericht) zusatz = { ...zusatz, bericht: schlank(zusatz.bericht) };
     const stand = {
       zeit: Date.now(),
       datensatz: $("datensatz").value,
@@ -1106,6 +1169,7 @@ function zeigeGemerktenBericht(stand) {
   $("ergebnis").append(zuvor);
   try {
     zeigeBericht(stand.bericht, stand.datensatz, stand.schluessel, zuvor);
+    zeigeGemerkteEinzelheiten(stand.einzelheiten, zuvor);
   } catch (fehler) {
     console.error("gemerkter Bericht:", fehler);
     zuvor.innerHTML = `<div class="karte hinweis">Der gemerkte Bericht ließ sich nicht anzeigen
