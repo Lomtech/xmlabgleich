@@ -159,6 +159,8 @@ pub struct OffeneZeile {
     /// Abgeschlossene Zeilen tieferer Gruppen, die auf den Schlüssel dieser
     /// Zeile warten.
     pub wartende: Vec<WartendeZeile>,
+    /// Wie oft welcher Blattpfad in dieser Zeile schon vorkam.
+    pub feldzaehler: HashMap<Vec<u8>, u32>,
 }
 
 impl OffeneZeile {
@@ -179,6 +181,7 @@ impl OffeneZeile {
             schluessel_text: vec![None; schluesselzahl],
             kinder: HashMap::new(),
             wartende: Vec::new(),
+            feldzaehler: HashMap::new(),
         }
     }
 
@@ -206,4 +209,31 @@ pub fn unterschluessel(eltern: &[u8], nummer: u32) -> Vec<u8> {
     s.push(b'#');
     s.extend_from_slice(nummer.to_string().as_bytes());
     s
+}
+
+/// Höchster Index, der einem wiederholten Blatt angehängt wird. Darüber
+/// hinaus landen alle weiteren in einem Sammeleintrag — sonst bekäme eine
+/// Datei mit tausend Wiederholungen tausend Spalten.
+pub const INDEX_HOECHSTENS: u32 = 64;
+
+/// Hängt einem wiederholten Blattpfad seine laufende Nummer an.
+///
+/// Das erste Vorkommen bleibt unverändert: Für Felder, die nur einmal
+/// dastehen — der Normalfall —, ändert sich dadurch nichts. Erst ab dem
+/// zweiten wird die Position bedeutsam, und genau dort ist sie es auch:
+/// `<TELEFON>111</TELEFON><TELEFON>222</TELEFON>` sind zwei verschiedene
+/// Angaben, und ihr Tausch ist eine Änderung.
+pub fn mit_index(pfad: &[u8], nummer: u32) -> Vec<u8> {
+    if nummer == 0 {
+        return pfad.to_vec();
+    }
+    let mut p = pfad.to_vec();
+    p.push(b'[');
+    if nummer <= INDEX_HOECHSTENS {
+        p.extend_from_slice(nummer.to_string().as_bytes());
+    } else {
+        p.extend_from_slice(b"...");
+    }
+    p.push(b']');
+    p
 }

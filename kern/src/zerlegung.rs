@@ -7,7 +7,9 @@
 
 use crate::abdruck::Aggregat;
 use crate::scanner::Beobachter;
-use crate::tabellen::{fnv, fnv_weiter, unterschluessel, OffeneZeile, Tabelle, WartendeZeile};
+use crate::tabellen::{
+    fnv, fnv_weiter, mit_index, unterschluessel, OffeneZeile, Tabelle, WartendeZeile,
+};
 use std::collections::{HashMap, HashSet};
 
 const FNV_ANFANG: u32 = 2166136261;
@@ -134,6 +136,17 @@ impl Zerlegung {
         let tabellenname = match self.stapel.last() {
             Some(z) => z.tabelle.clone(),
             None => return,
+        };
+
+        // Wiederholte Blätter bekommen ihre laufende Nummer. Ohne sie gingen
+        // mehrere gleichnamige Felder derselben Zeile in einer Summe auf, und
+        // ihr Tausch bliebe unsichtbar.
+        let pfad = {
+            let z = self.stapel.last_mut().expect("Zeile offen");
+            let n = z.feldzaehler.entry(pfad.clone()).or_insert(0);
+            let nummer = *n;
+            *n += 1;
+            mit_index(&pfad, nummer)
         };
         let nummer = self
             .tabellen

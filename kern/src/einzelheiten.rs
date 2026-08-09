@@ -12,7 +12,7 @@
 //! eine Tabelle, ein paar Eimer, ein paar Felder.
 
 use crate::scanner::Beobachter;
-use crate::tabellen::{fnv, unterschluessel, OffeneZeile};
+use crate::tabellen::{fnv, mit_index, unterschluessel, OffeneZeile};
 use std::collections::HashSet;
 
 
@@ -219,6 +219,17 @@ impl Einzelheiten {
     }
 
     fn nimm(&mut self, pfad: Vec<u8>, wert: Vec<u8>) {
+        // Muss dieselbe Nummerierung ergeben wie die Zerlegung, sonst sucht
+        // der zweite Durchlauf nach Pfaden, die es dort nicht gibt.
+        let pfad = match self.stapel.last_mut() {
+            Some(z) => {
+                let n = z.feldzaehler.entry(pfad.clone()).or_insert(0);
+                let nummer = *n;
+                *n += 1;
+                mit_index(&pfad, nummer)
+            }
+            None => pfad,
+        };
         if let Some(felder) = self.inhalte.last_mut() {
             felder.push((pfad, wert));
         }

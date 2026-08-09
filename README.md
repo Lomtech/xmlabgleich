@@ -42,6 +42,11 @@ und im Klartext benannt.
 Der Zeilenschlüssel einer Gruppe ist Fremdschlüssel plus laufende Nummer
 (`2015-01-01#0`). Damit zählt auch die Reihenfolge innerhalb der Gruppe.
 
+Dasselbe gilt für **wiederholte einzelne Felder**: Das erste bleibt `TELEFON`,
+jedes weitere wird `TELEFON[1]`, `TELEFON[2]`. Ohne diese Nummer gingen zwei
+Telefonnummern in einer Summe auf und ihr Tausch bliebe unsichtbar; für
+Felder, die nur einmal dastehen, ändert sich nichts.
+
 **Ein Fallstrick dabei:** Das Schlüsselfeld eines Datensatzes kann *nach* der
 Wiederholgruppe stehen. Würde die Gruppenzeile beim Öffnen zugeordnet, bekäme
 sie einen leeren Fremdschlüssel — alle Zeilen aller Datensätze lägen unter

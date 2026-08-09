@@ -252,3 +252,76 @@ fn schluessel_nach_der_wiederholgruppe() {
          der Wiederholgruppe kommt"
     );
 }
+
+// ------------------------------------------------- wiederholte Blattfelder
+
+/// Mehrere gleichnamige Blätter nebeneinander — ohne Index gingen ihre Werte
+/// in einer Summe auf und ihr Tausch bliebe unsichtbar.
+#[test]
+fn vertauschte_wiederholte_blaetter_fallen_auf() {
+    let a = "<INVESTMENTS><INVESTMENT><ID>A1</ID>\
+        <TELEFON>111</TELEFON><TELEFON>222</TELEFON></INVESTMENT></INVESTMENTS>";
+    let b = "<INVESTMENTS><INVESTMENT><ID>A1</ID>\
+        <TELEFON>222</TELEFON><TELEFON>111</TELEFON></INVESTMENT></INVESTMENTS>";
+    assert_ne!(
+        zerlege(a, 9).gesamt(),
+        zerlege(b, 9).gesamt(),
+        "zwei vertauschte Telefonnummern sind eine Änderung"
+    );
+}
+
+/// Der Index macht die Position sichtbar — als eigene Spalte, nicht als
+/// namenloser Unterschied.
+#[test]
+fn wiederholte_blaetter_bekommen_eine_nummer() {
+    let x = "<INVESTMENTS><INVESTMENT><ID>A1</ID>\
+        <TELEFON>111</TELEFON><TELEFON>222</TELEFON><TELEFON>333</TELEFON>\
+        </INVESTMENT></INVESTMENTS>";
+    let z = zerlege(x, 11);
+    let mut spalten: Vec<String> = z
+        .haupt()
+        .spalten
+        .keys()
+        .map(|k| String::from_utf8_lossy(k).to_string())
+        .collect();
+    spalten.sort();
+    assert_eq!(spalten, vec!["ID", "TELEFON", "TELEFON[1]", "TELEFON[2]"]);
+}
+
+/// Ein Feld, das nur einmal vorkommt — der Normalfall —, bleibt unverändert.
+/// Sonst hinge jeder bestehende Abdruck an dieser Änderung.
+#[test]
+fn einzelne_felder_bekommen_keinen_index() {
+    let x = dok(&[&satz_mit("A1")]);
+    let z = zerlege(&x, 8);
+    let spalten: Vec<String> = z
+        .haupt()
+        .spalten
+        .keys()
+        .map(|k| String::from_utf8_lossy(k).to_string())
+        .collect();
+    assert!(
+        !spalten.iter().any(|s| s.contains('[')),
+        "keine Nummern bei einfachen Feldern: {spalten:?}"
+    );
+}
+
+/// Eine fehlende Wiederholung fällt als fehlende Spalte auf.
+#[test]
+fn weniger_wiederholungen_fallen_auf() {
+    let drei = "<INVESTMENTS><INVESTMENT><ID>A1</ID>\
+        <TELEFON>1</TELEFON><TELEFON>2</TELEFON><TELEFON>3</TELEFON></INVESTMENT></INVESTMENTS>";
+    let zwei = "<INVESTMENTS><INVESTMENT><ID>A1</ID>\
+        <TELEFON>1</TELEFON><TELEFON>2</TELEFON></INVESTMENT></INVESTMENTS>";
+    let (x, y) = (zerlege(drei, 7), zerlege(zwei, 7));
+    assert!(x.haupt().spalten.contains_key(b"TELEFON[2]".as_slice()));
+    assert!(!y.haupt().spalten.contains_key(b"TELEFON[2]".as_slice()));
+    assert_ne!(x.gesamt(), y.gesamt());
+}
+
+fn dok(saetze: &[&str]) -> String {
+    format!("<INVESTMENTS>{}</INVESTMENTS>", saetze.concat())
+}
+fn satz_mit(id: &str) -> String {
+    format!("<INVESTMENT><ID>{id}</ID><TYP>BOND</TYP><BETRAG>1.00</BETRAG></INVESTMENT>")
+}
