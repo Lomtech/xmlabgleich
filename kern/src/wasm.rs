@@ -11,6 +11,7 @@
 //! Ausgabepuffer.
 
 use crate::abdruck::Abdruck;
+use crate::einzelheiten::Einzelheiten;
 use crate::erkundung::Erkundung;
 use crate::scanner::Scanner;
 
@@ -27,6 +28,13 @@ static mut AUSGABE_LEN: usize = 0;
 static mut SCANNER: Option<Scanner> = None;
 static mut ERKUNDUNG: Option<Erkundung> = None;
 static mut ABDRUCK: Option<Abdruck> = None;
+static mut EINZELHEITEN: Option<Einzelheiten> = None;
+/// Zwischenlager für die Suchvorgabe des zweiten Durchlaufs.
+static mut SUCH_DATENSATZ: String = String::new();
+static mut SUCH_SCHLUESSEL: Vec<String> = Vec::new();
+static mut SUCH_EIMER_GESAMT: u32 = 4096;
+static mut SUCH_EIMER: Vec<usize> = Vec::new();
+static mut SUCH_PFADE: Vec<Vec<u8>> = Vec::new();
 
 #[no_mangle]
 pub extern "C" fn puffer_ptr() -> *mut u8 {
@@ -248,6 +256,8 @@ pub extern "C" fn abdruck_fertig() {
     j.push_str(&g.anordnung.to_string());
     j.push_str(",\"auspraegungen\":");
     j.push_str(&g.ausprägungen.to_string());
+    j.push_str(",\"satzfolge\":");
+    j.push_str(&g.satzfolge.to_string());
     j.push_str(",\"anordnungen\":");
     j.push_str(&a.anordnungen.len().to_string());
 
@@ -283,6 +293,14 @@ pub extern "C" fn abdruck_fertig() {
     }
     j.push(']');
 
+    j.push_str(",\"ersteSchluessel\":[");
+    for (i, s) in a.erste_schluessel.iter().take(5000).enumerate() {
+        if i > 0 {
+            j.push(',');
+        }
+        json_text(s, &mut j);
+    }
+    j.push(']');
     j.push_str(",\"datensaetze\":");
     j.push_str(&a.datensaetze.to_string());
     j.push_str(",\"blaetter\":");
@@ -326,5 +344,133 @@ pub extern "C" fn abdruck_fertig() {
     }
     j.push_str("]}");
 
+    schreibe(&j);
+}
+
+// --------------------------------------------------------- Einzelheiten
+//
+// Zweiter Durchlauf: die Klartextwerte hinter einer gemeldeten Abweichung.
+// Die Suche wird durch das Ergebnis des ersten Durchlaufs eingegrenzt — auf
+// die abweichenden Eimer und Pfade —, sodass nur eine Handvoll Datensätze
+// überhaupt eingesammelt wird.
+//
+// Ablauf von JavaScript aus:
+//   einzelheiten_vorbereiten(konfig_len, eimer)
+//   einzelheiten_eimer(nr)      je gesuchtem Eimer
+//   einzelheiten_pfad(len)      je gesuchtem Pfad (Text im Puffer)
+//   einzelheiten_start()
+//   einzelheiten_block(len)     je Block
+//   einzelheiten_fertig()
+
+/// Übernimmt Datensatzpfad und Schlüsselfelder wie `abdruck_start` und leert
+/// die Suchvorgabe.
+#[no_mangle]
+pub extern "C" fn einzelheiten_vorbereiten(konfig_len: u32, eimer: u32) {
+    let roh = puffer(konfig_len);
+    let text = String::from_utf8_lossy(roh);
+    let mut zeilen = text.split('\n');
+    let datensatz = zeilen.next().unwrap_or("").trim().to_string();
+    let schluessel: Vec<String> = zeilen
+        .map(|z| z.trim().to_string())
+        .filter(|z| !z.is_empty())
+        .collect();
+    unsafe {
+        SUCH_DATENSATZ = datensatz;
+        SUCH_SCHLUESSEL = schluessel;
+        SUCH_EIMER_GESAMT = eimer.max(1);
+        SUCH_EIMER = Vec::new();
+        SUCH_PFADE = Vec::new();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn einzelheiten_eimer(nr: u32) {
+    unsafe {
+        (&mut *(&raw mut SUCH_EIMER)).push(nr as usize);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn einzelheiten_pfad(len: u32) {
+    let p = puffer(len).to_vec();
+    unsafe {
+        (&mut *(&raw mut SUCH_PFADE)).push(p);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn einzelheiten_start() {
+    unsafe {
+        let datensatz = (&*(&raw const SUCH_DATENSATZ)).clone();
+        let schluessel: Vec<&str> = (&*(&raw const SUCH_SCHLUESSEL))
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let eimer: Vec<usize> = (&*(&raw const SUCH_EIMER)).clone();
+        let pfade: Vec<&[u8]> = (&*(&raw const SUCH_PFADE))
+            .iter()
+            .map(|p| p.as_slice())
+            .collect();
+
+        SCANNER = Some(Scanner::neu());
+        EINZELHEITEN = Some(Einzelheiten::neu(
+            &datensatz,
+            &schluessel,
+            SUCH_EIMER_GESAMT as usize,
+            &eimer,
+            &pfade,
+        ));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn einzelheiten_block(len: u32) {
+    let daten = puffer(len);
+    unsafe {
+        if let (Some(s), Some(e)) = (
+            (&mut *(&raw mut SCANNER)).as_mut(),
+            (&mut *(&raw mut EINZELHEITEN)).as_mut(),
+        ) {
+            s.block(daten, e);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn einzelheiten_fertig() {
+    let (s, e) = unsafe {
+        (
+            (&mut *(&raw mut SCANNER)).as_mut(),
+            (&mut *(&raw mut EINZELHEITEN)).as_mut(),
+        )
+    };
+    let (s, e) = match (s, e) {
+        (Some(s), Some(e)) => (s, e),
+        _ => {
+            schreibe("{\"fehler\":\"nicht begonnen\"}");
+            return;
+        }
+    };
+    s.abschliessen(e);
+
+    let mut j = String::with_capacity(64 * 1024);
+    j.push_str("{\"abgeschnitten\":");
+    j.push_str(if e.abgeschnitten { "true" } else { "false" });
+    j.push_str(",\"funde\":[");
+    for (i, f) in e.funde.iter().enumerate() {
+        if i > 0 {
+            j.push(',');
+        }
+        j.push('[');
+        json_text(&f.schluessel, &mut j);
+        j.push(',');
+        json_text(&f.pfad, &mut j);
+        j.push(',');
+        json_text(&f.wert, &mut j);
+        j.push(',');
+        j.push_str(&f.folge.to_string());
+        j.push(']');
+    }
+    j.push_str("]}");
     schreibe(&j);
 }

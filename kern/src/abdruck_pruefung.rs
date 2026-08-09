@@ -75,17 +75,6 @@ fn blockgroesse_aendert_nichts() {
 }
 
 #[test]
-fn reihenfolge_der_datensaetze_aendert_nichts() {
-    let a = dok(&[&satz("A1", "BOND", "100.00"), &satz("A2", "EQUITY", "250.50")]);
-    let b = dok(&[&satz("A2", "EQUITY", "250.50"), &satz("A1", "BOND", "100.00")]);
-    assert_eq!(
-        kennwerte(&abdruck_von(&a, 7)),
-        kennwerte(&abdruck_von(&b, 7)),
-        "Die Reihenfolge der Datensätze darf keine Rolle spielen"
-    );
-}
-
-#[test]
 fn einrueckung_aendert_nichts() {
     let kompakt = dok(&[&satz("A1", "BOND", "100.00")]);
     let huebsch = "<INVESTMENTS>\n  <INVESTMENT>\n    <ID>A1</ID>\n    <TYP>BOND</TYP>\n    <BETRAG>100.00</BETRAG>\n  </INVESTMENT>\n</INVESTMENTS>";
@@ -230,16 +219,73 @@ fn beide_achsen_ergeben_dieselbe_summe() {
 #[test]
 fn gesamtwert_ist_gleich_bei_gleichem_inhalt() {
     let a = dok(&[&satz("A1", "BOND", "100.00"), &satz("A2", "EQUITY", "250.50")]);
-    // Umgestellt und anders eingerückt — derselbe Inhalt.
+    // Nur anders eingerückt — gleiche Sätze in gleicher Folge.
     let b = format!(
         "<INVESTMENTS>\n  {}\n  {}\n</INVESTMENTS>",
-        satz("A2", "EQUITY", "250.50"),
-        satz("A1", "BOND", "100.00")
+        satz("A1", "BOND", "100.00"),
+        satz("A2", "EQUITY", "250.50")
     );
     assert_eq!(
         abdruck_von(&a, 7).gesamt().wert,
         abdruck_von(&b, 7).gesamt().wert
     );
+}
+
+/// Umsortierte Datensätze sind ein Unterschied und werden als solcher
+/// gemeldet — auch wenn dieselben Sätze mit denselben Werten dastehen.
+///
+/// Ob eine Umsortierung hinnehmbar ist, hängt vom Verarbeitungsweg ab: Manche
+/// Ladeprogramme verarbeiten in Dokumentfolge und bauen Abhängigkeiten
+/// zwischen Sätzen auf. Das Werkzeug stellt fest, es bewertet nicht.
+#[test]
+fn umsortierte_datensaetze_sind_ein_unterschied() {
+    let a = dok(&[&satz("A1", "BOND", "100.00"), &satz("A2", "EQUITY", "250.50")]);
+    let b = dok(&[&satz("A2", "EQUITY", "250.50"), &satz("A1", "BOND", "100.00")]);
+    let (x, y) = (abdruck_von(&a, 7).gesamt(), abdruck_von(&b, 7).gesamt());
+
+    assert_ne!(x.satzfolge, y.satzfolge, "die Satzfolge muss anschlagen");
+    assert_ne!(x.wert, y.wert, "und damit auch der Gesamtwert");
+
+    // Alles andere bleibt gleich — daran ist erkennbar, dass *nur*
+    // umsortiert und nichts verändert wurde.
+    assert_eq!(x.struktur, y.struktur);
+    assert_eq!(x.anordnung, y.anordnung);
+    assert_eq!(x.ausprägungen, y.ausprägungen);
+}
+
+/// Und die Umkehrung: Die Ränder überstehen eine Umsortierung. Sonst wäre
+/// nicht unterscheidbar, ob umsortiert oder verändert wurde.
+#[test]
+fn raender_ueberstehen_eine_umsortierung() {
+    let a = dok(&[&satz("A1", "BOND", "100.00"), &satz("A2", "EQUITY", "250.50")]);
+    let b = dok(&[&satz("A2", "EQUITY", "250.50"), &satz("A1", "BOND", "100.00")]);
+    let (sa, za, _) = kennwerte(&abdruck_von(&a, 7));
+    let (sb, zb, _) = kennwerte(&abdruck_von(&b, 7));
+    assert_eq!(sa, sb, "der Spaltenrand ist kommutativ");
+    assert_eq!(za, zb, "der Zeilenrand auch");
+}
+
+/// Die gemerkten Schlüssel müssen die erste abweichende Stelle benennen
+/// können — „irgendwo anders sortiert" hilft niemandem.
+#[test]
+fn erste_schluessel_zeigen_wo_die_folge_auseinanderlaeuft() {
+    let a = dok(&[&satz("A1", "x", "1"), &satz("A2", "y", "2"), &satz("A3", "z", "3")]);
+    let b = dok(&[&satz("A1", "x", "1"), &satz("A3", "z", "3"), &satz("A2", "y", "2")]);
+    let (x, y) = (abdruck_von(&a, 8), abdruck_von(&b, 8));
+
+    let als_text = |ab: &Abdruck| {
+        ab.erste_schluessel
+            .iter()
+            .map(|s| String::from_utf8_lossy(s).to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(als_text(&x), vec!["A1", "A2", "A3"]);
+    assert_eq!(als_text(&y), vec!["A1", "A3", "A2"]);
+
+    // Die erste Abweichung liegt an Stelle 2.
+    let (fx, fy) = (als_text(&x), als_text(&y));
+    let erste = fx.iter().zip(fy.iter()).position(|(p, q)| p != q);
+    assert_eq!(erste, Some(1));
 }
 
 /// Der eigentliche Zweck: Im ersten Schritt genügt ein Wert, um eine

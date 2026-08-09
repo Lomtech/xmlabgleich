@@ -59,6 +59,7 @@ td.zahl, th.zahl { text-align: right; font-variant-numeric: tabular-nums }
 .urteil { padding: 1rem 1.25rem; border-radius: 10px; font-weight: 600; display: flex; gap: .75rem; align-items: center }
 .urteil.gut { background: color-mix(in srgb, var(--gut) 12%, transparent); color: var(--gut) }
 .urteil.schlecht { background: color-mix(in srgb, var(--schlecht) 12%, transparent); color: var(--schlecht) }
+.urteil.warnung { background: color-mix(in srgb, var(--warnung) 14%, transparent); color: var(--warnung) }
 .urteil .zeichen { font-size: 1.5rem }
 .urteil .text { font-weight: 400; color: var(--text) }
 .marke { display: inline-block; padding: .1rem .45rem; border-radius: 5px; font-size: .78rem; font-weight: 600 }
@@ -70,6 +71,17 @@ code, .pfad { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-
 .verborgen { display: none }
 ul.grenzen { color: var(--gedaempft); font-size: .88rem; padding-left: 1.1rem; margin: .5rem 0 0 }
 ul.grenzen li { margin: .25rem 0 }
+mark {
+  background: color-mix(in srgb, var(--schlecht) 28%, transparent);
+  color: inherit; border-radius: 3px; padding: 0 .12em; font-weight: 700;
+}
+button.mini {
+  font-size: .8rem; padding: .2rem .5rem; border-radius: 5px;
+  border: 1px solid var(--rand); background: transparent; color: var(--gedaempft);
+}
+button.mini:hover { color: var(--text); border-color: var(--betont) }
+.loading::after { content: " …"; animation: punkte 1.2s infinite }
+@keyframes punkte { 0%,100% { opacity: .4 } 50% { opacity: 1 } }
 </style>
 </head>
 <body>
@@ -85,11 +97,13 @@ ul.grenzen li { margin: .25rem 0 }
   <div class="paar">
     <div class="ablage" id="ablage-a">
       <label class="knopf">Quelle wählen<input type="file" id="datei-a" accept=".xml,text/xml,application/xml"></label>
+      <button type="button" class="mini merkbar" data-dialog="a" hidden>merkbar öffnen …</button>
       <div class="name" id="name-a"></div>
       <div class="groesse" id="groesse-a">oder Datei hierher ziehen</div>
     </div>
     <div class="ablage" id="ablage-b">
       <label class="knopf">Ziel wählen<input type="file" id="datei-b" accept=".xml,text/xml,application/xml"></label>
+      <button type="button" class="mini merkbar" data-dialog="b" hidden>merkbar öffnen …</button>
       <div class="name" id="name-b"></div>
       <div class="groesse" id="groesse-b">oder Datei hierher ziehen</div>
     </div>
@@ -268,6 +282,7 @@ async function erkunden(datei) {
       : `Achtung: ${bester.feld} hat nur ${zahl(bester.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen — mehrere Datensätze fallen damit zusammen.`;
   }
   $("starten").disabled = !(dateien.a && dateien.b);
+  standSpeichern();
 }
 
 /* ─────────────────────────────────────────── Abgleich */
@@ -311,8 +326,127 @@ $("starten").addEventListener("click", async () => {
   $("balken").classList.add("verborgen");
   $("starten").disabled = false;
 
-  zeigeBericht(vergleiche(a, b), datensatz, schluessel);
+  const e = vergleiche(a, b);
+  zeigeBericht(e, datensatz, schluessel);
+  standSpeichern({ bericht: e });
+
+  // Zweiter Durchlauf: die konkreten Werte hinter den Abweichungen.
+  //
+  // Der Abdruck selbst ist datenfrei, damit er einen Betrieb verlassen darf.
+  // Hier liegen aber beide Dateien auf demselben Rechner — es wandert nichts,
+  // und die einzige Frage, die zählt, lautet: was steht da anders? Der erste
+  // Durchlauf hat die Suche bereits auf wenige Datensätze eingegrenzt.
+  if (!e.bestanden && schluessel && e.spalten.length && e.eimer.length) {
+    await zeigeEinzelheiten(w, e, konfig);
+  }
 });
+
+/** Holt die Klartextwerte der abweichenden Stellen aus beiden Dateien. */
+async function einzelheitenVon(w, datei, konfig, eimer, pfade) {
+  const roh = new TextEncoder().encode(konfig);
+  new Uint8Array(w.memory.buffer, w.puffer_ptr(), roh.length).set(roh);
+  w.einzelheiten_vorbereiten(roh.length, EIMER);
+  for (const nr of eimer) w.einzelheiten_eimer(nr);
+  for (const p of pfade) {
+    const b = new TextEncoder().encode(p);
+    new Uint8Array(w.memory.buffer, w.puffer_ptr(), b.length).set(b);
+    w.einzelheiten_pfad(b.length);
+  }
+  w.einzelheiten_start();
+  await durchschieben(w, datei, len => w.einzelheiten_block(len));
+  w.einzelheiten_fertig();
+  return ergebnisLesen(w);
+}
+
+async function zeigeEinzelheiten(w, e, konfig) {
+  const ziel = document.createElement("div");
+  ziel.innerHTML = `<h2>Welcher Wert?</h2>
+    <div class="karte hinweis"><span class="loading">Die betroffenen Datensätze werden gelesen …</span></div>`;
+  $("ergebnis").append(ziel);
+
+  // Nur die abweichenden Eimer und Felder — sonst läse man die Datei
+  // vollständig ein zweites Mal ein.
+  const eimer = e.eimer.map(g => g.nr);
+  const pfade = e.spalten.filter(s => s.art === "abweichend").map(s => s.pfad);
+  if (!pfade.length) { ziel.remove(); return }
+
+  const [ea, eb] = [
+    await einzelheitenVon(w, dateien.a, konfig, eimer, pfade),
+    await einzelheitenVon(w, dateien.b, konfig, eimer, pfade),
+  ];
+
+  // Nach Schlüssel, Feld und laufender Nummer gegenüberstellen.
+  const tabelle = new Map();
+  const eintragen = (funde, seite) => {
+    for (const [schluessel, pfad, wert, folge] of funde.funde ?? []) {
+      const k = `${schluessel}\u001f${pfad}\u001f${folge}`;
+      if (!tabelle.has(k)) tabelle.set(k, { schluessel, pfad, folge });
+      tabelle.get(k)[seite] = wert;
+    }
+  };
+  eintragen(ea, "a");
+  eintragen(eb, "b");
+
+  const unterschiede = [...tabelle.values()].filter(z => z.a !== z.b);
+
+  if (!unterschiede.length) {
+    ziel.innerHTML = `<h2>Welcher Wert?</h2>
+      <div class="karte hinweis">Die betroffenen Datensätze ließen sich nicht auflösen —
+      möglicherweise ist der Schlüssel nicht eindeutig.</div>`;
+    return;
+  }
+
+  const t = [`<h2>Welcher Wert?</h2>
+    <div class="karte hinweis" style="margin-bottom:.75rem">
+      ${viele(unterschiede.length, "Stelle unterscheidet", "Stellen unterscheiden")} sich —
+      gefunden durch gezieltes Nachlesen ${eimer.length === 1
+        ? "der einen betroffenen Gruppe"
+        : `der ${zahl(eimer.length)} betroffenen Gruppen`}
+      statt der ganzen Datei.
+      ${(ea.abgeschnitten || eb.abgeschnitten) ? "<b>Die Liste ist gekürzt.</b>" : ""}
+    </div>
+    <div class="rahmen"><table><thead><tr>
+      <th>Schlüssel</th><th>Feld</th><th>Quelle</th><th>Ziel</th>
+    </tr></thead><tbody>`];
+
+  for (const z of unterschiede.slice(0, 200)) {
+    t.push(`<tr>
+      <td class="pfad">${escape(z.schluessel)}</td>
+      <td class="pfad" style="font-size:.8em;opacity:.75">${escape(kurzerPfad(z.pfad))}${z.folge ? ` [${z.folge + 1}]` : ""}</td>
+      <td>${hervorheben(z.a, z.b)}</td>
+      <td>${hervorheben(z.b, z.a)}</td>
+    </tr>`);
+  }
+  if (unterschiede.length > 200) {
+    t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(unterschiede.length - 200)} weitere</td></tr>`);
+  }
+  t.push(`</tbody></table></div>`);
+  ziel.innerHTML = t.join("");
+}
+
+/** Letztes Pfadstück, der Rest gekürzt — die vollen Pfade sind sehr lang. */
+function kurzerPfad(p) {
+  const teile = String(p).split("/");
+  return teile.length > 2 ? "…/" + teile.slice(-2).join("/") : p;
+}
+
+/**
+ * Stellt die abweichenden Zeichen heraus. Bei einer vertauschten Ziffer in
+ * einem langen Wert ist das der Unterschied zwischen „irgendwas ist anders"
+ * und „hier".
+ */
+function hervorheben(wert, andere) {
+  if (wert === undefined) return '<span class="hinweis">– fehlt –</span>';
+  if (andere === undefined) return `<code>${escape(wert)}</code>`;
+  const w = String(wert), a = String(andere);
+  let vorn = 0;
+  while (vorn < w.length && vorn < a.length && w[vorn] === a[vorn]) vorn++;
+  let hinten = 0;
+  while (hinten < w.length - vorn && hinten < a.length - vorn &&
+         w[w.length - 1 - hinten] === a[a.length - 1 - hinten]) hinten++;
+  const mitte = w.slice(vorn, w.length - hinten);
+  return `<code>${escape(w.slice(0, vorn))}<mark>${escape(mitte) || "∅"}</mark>${escape(w.slice(w.length - hinten))}</code>`;
+}
 
 /* ─────────────────────────────────────────── Vergleich */
 
@@ -336,16 +470,33 @@ function vergleiche(a, b) {
     if (x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2]) eimer.push({ nr: i, a: x, b: y });
   }
 
+  // Die Satzfolge zählt mit. Sie ist die einzige nicht kommutative Prüfung
+  // hier — und ein Bestand, dessen Sätze anders sortiert sind, ist nicht
+  // derselbe Bestand, auch wenn jeder einzelne Satz stimmt. Ob das im
+  // konkreten Fall stört, entscheidet der Verarbeitungsweg, nicht dieses
+  // Werkzeug; gemeldet wird es in jedem Fall.
+  const folgeGleich = a.satzfolge === b.satzfolge;
+  const werteGleich = spalten.length === 0 && eimer.length === 0
+    && a.datensaetze === b.datensaetze;
+
   return {
     a, b, spalten, eimer,
+    // Mitgeführt, damit der Bericht für sich steht: Nach einem Neuladen sind
+    // die Dateien nicht mehr geöffnet, der gemerkte Bericht soll trotzdem
+    // vollständig anzeigbar sein.
+    dateiA: { name: dateien.a?.name ?? "Quelle", groesse: dateien.a?.size ?? null },
+    dateiB: { name: dateien.b?.name ?? "Ziel", groesse: dateien.b?.size ?? null },
     datensaetzeGleich: a.datensaetze === b.datensaetze,
-    bestanden: spalten.length === 0 && eimer.length === 0 && a.datensaetze === b.datensaetze,
+    folgeGleich,
+    werteGleich,
+    nurUmsortiert: werteGleich && !folgeGleich,
+    bestanden: werteGleich && folgeGleich,
   };
 }
 
 /* ─────────────────────────────────────────── Bericht */
 
-function zeigeBericht(e, datensatz, schluessel) {
+function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   const t = [];
   const proEimer = Math.max(1, Math.round(e.a.datensaetze / EIMER));
 
@@ -379,6 +530,9 @@ function zeigeBericht(e, datensatz, schluessel) {
     { name: "Anordnung", frage: "Dieselbe Aneinanderreihung?",
       gleich: e.a.anordnung === e.b.anordnung,
       folge: "Die Felder stehen in anderer Folge. Bei einem Schema mit fester Reihenfolge ist das ein Fehler, sonst nur ein Hinweis auf eine andere Erzeugung." },
+    { name: "Satzfolge", frage: "Dieselbe Reihenfolge der Datensätze?",
+      gleich: e.a.satzfolge === e.b.satzfolge,
+      folge: satzfolgeText(e) },
     { name: "Ausprägungen", frage: "Dieselben Werte?",
       gleich: e.a.auspraegungen === e.b.auspraegungen,
       folge: "Einzelne Werte weichen ab — welche, steht unten." },
@@ -413,11 +567,18 @@ function zeigeBericht(e, datensatz, schluessel) {
   const mengeAnders = !e.datensaetzeGleich;
   const d = e.b.datensaetze - e.a.datensaetze;
 
-  t.push(`<div class="urteil ${e.bestanden ? "gut" : "schlecht"}">
-    <span class="zeichen">${e.bestanden ? "✓" : "✗"}</span>
-    <span>${e.bestanden ? "Übereinstimmung" : "Abweichungen"}
+  const stufe = e.bestanden ? "gut" : e.nurUmsortiert ? "warnung" : "schlecht";
+  const zeichen = e.bestanden ? "✓" : e.nurUmsortiert ? "!" : "✗";
+  const ueberschrift = e.bestanden ? "Übereinstimmung"
+    : e.nurUmsortiert ? "Gleiche Werte, andere Reihenfolge" : "Abweichungen";
+
+  t.push(`<div class="urteil ${stufe}">
+    <span class="zeichen">${zeichen}</span>
+    <span>${ueberschrift}
       <span class="text">— ${e.bestanden
-        ? "Beide Dateien tragen dieselben Werte in denselben Feldern."
+        ? "Beide Dateien tragen dieselben Werte in denselben Feldern, in derselben Folge."
+        : e.nurUmsortiert
+          ? "Jeder Satz ist mit denselben Werten vorhanden, aber die Datensätze stehen in anderer Reihenfolge."
         : mengeAnders
           ? `Das Ziel hat ${zahl(Math.abs(d))} Datensatz${Math.abs(d) === 1 ? "" : "e"}
              ${d < 0 ? "weniger" : "mehr"} als die Quelle (${zahl(e.a.datensaetze)} gegen ${zahl(e.b.datensaetze)}).`
@@ -434,8 +595,8 @@ function zeigeBericht(e, datensatz, schluessel) {
   }
 
   t.push(`<div class="karte"><div class="paar">
-    ${seite("Quelle", dateien.a, e.a)}
-    ${seite("Ziel", dateien.b, e.b)}
+    ${seite("Quelle", e.dateiA, e.a)}
+    ${seite("Ziel", e.dateiB, e.b)}
   </div></div>`);
 
   // Spaltenachse
@@ -496,7 +657,6 @@ function zeigeBericht(e, datensatz, schluessel) {
   }
 
   t.push(`<h2>Nicht geprüft</h2><div class="karte"><ul class="grenzen">
-    <li>Die Reihenfolge der Datensätze — sie darf sich ändern, ohne dass es als Fehler gilt.</li>
     <li>Attribute; verglichen werden Elementinhalte.</li>
     <li>Ab zwei betroffenen Feldern ist die Kreuzung nicht mehr eindeutig:
         Zeilen- und Spaltenachse markieren dann mehr Stellen, als tatsächlich abweichen.</li>
@@ -506,7 +666,7 @@ function zeigeBericht(e, datensatz, schluessel) {
          für sie gilt die Zeilenachse nicht.</li>` : ""}
   </ul></div>`);
 
-  $("ergebnis").innerHTML = t.join("");
+  (ziel ?? $("ergebnis")).innerHTML = t.join("");
 }
 
 /**
@@ -523,7 +683,7 @@ function strukturTabelle(e) {
     anzahl: f.anzahl,
   }));
   const fa = alsNamen(e.a), fb = alsNamen(e.b);
-  const schluessel = f => f.namen.join("");
+  const schluessel = f => f.namen.join("\u001f");
 
   const inB = new Set(fb.map(schluessel));
   const inA = new Set(fa.map(schluessel));
@@ -607,15 +767,48 @@ function strukturTabelle(e) {
   return t.join("");
 }
 
-function seite(titel, datei, abdruck) {
+/**
+ * Beschreibt, wo die Satzfolge auseinanderläuft.
+ *
+ * Ob eine Umsortierung hinnehmbar ist, hängt vom Verarbeitungsweg ab — manche
+ * Ladeprogramme arbeiten in Dokumentfolge und bauen Abhängigkeiten zwischen
+ * Sätzen auf. Das Werkzeug stellt fest und bewertet nicht.
+ */
+function satzfolgeText(e) {
+  const a = e.a.ersteSchluessel ?? [], b = e.b.ersteSchluessel ?? [];
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+
+  if (i >= a.length && i >= b.length) {
+    return "Die Datensätze stehen in anderer Reihenfolge.";
+  }
+  const mengeA = new Set(a), mengeB = new Set(b);
+  const hier = a[i], dort = b[i];
+
+  if (hier !== undefined && dort !== undefined && mengeA.has(dort) && mengeB.has(hier)) {
+    return `Ab dem ${zahl(i + 1)}. Datensatz stehen dieselben Sätze in anderer Folge: ` +
+           `Quelle „${hier}", Ziel „${dort}". Ob das zählt, hängt davon ab, ob das Zielsystem ` +
+           `in Dokumentfolge verarbeitet.`;
+  }
+  if (dort !== undefined && !mengeA.has(dort)) {
+    return `Ab dem ${zahl(i + 1)}. Datensatz: Im Ziel steht „${dort}", ` +
+           `der in der Quelle nicht vorkommt.`;
+  }
+  if (hier !== undefined && !mengeB.has(hier)) {
+    return `Ab dem ${zahl(i + 1)}. Datensatz: „${hier}" aus der Quelle fehlt im Ziel.`;
+  }
+  return `Die Folge läuft ab dem ${zahl(i + 1)}. Datensatz auseinander.`;
+}
+
+function seite(titel, angaben, abdruck) {
   return `<div>
     <div class="hinweis">${titel}</div>
-    <div style="font-weight:600;word-break:break-all">${escape(datei.name)}</div>
+    <div style="font-weight:600;word-break:break-all">${escape(angaben?.name ?? titel)}</div>
     <table style="margin-top:.5rem">
       <tr><td>Datensätze</td><td class="zahl">${zahl(abdruck.datensaetze)}</td></tr>
       <tr><td>Felder mit Wert</td><td class="zahl">${zahl(abdruck.blaetter)}</td></tr>
       <tr><td>verschiedene Feldpfade</td><td class="zahl">${zahl(abdruck.spalten.length)}</td></tr>
-      <tr><td>Umfang</td><td class="zahl">${groesse(datei.size)}</td></tr>
+      <tr><td>Umfang</td><td class="zahl">${angaben?.groesse == null ? "–" : groesse(angaben.groesse)}</td></tr>
     </table></div>`;
 }
 
@@ -624,9 +817,210 @@ function escape(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+
+/* ─────────────────────────────────────── Merken über das Neuladen hinweg
+ *
+ * Zwei Dinge werden aufbewahrt:
+ *
+ *  • **Einstellungen und Ergebnis** in localStorage — Kilobyte, immer
+ *    verfügbar. Der Bericht ist damit nach einem Neuladen sofort wieder da.
+ *  • **Dateiverweise** in IndexedDB. Ein solcher Verweis lässt sich nur über
+ *    den Systemdialog gewinnen (`showOpenFilePicker`); die klassische
+ *    Dateiauswahl liefert nur den Inhalt, keinen dauerhaften Bezug. Deshalb
+ *    gibt es beide Wege nebeneinander.
+ *
+ * Die Datei selbst wird nie gespeichert — nur der Verweis darauf. Beim
+ * nächsten Öffnen fragt der Browser nach Erlaubnis, und erst dann wird
+ * gelesen.
+ */
+const LAGER = "xmlabgleich";
+const SCHLUESSEL_STAND = LAGER + ":stand";
+
+function standSpeichern(zusatz = {}) {
+  try {
+    const stand = {
+      zeit: Date.now(),
+      datensatz: $("datensatz").value,
+      schluessel: $("schluessel").value,
+      kandidaten: [...$("schluessel").options].map(o => ({ v: o.value, t: o.textContent })),
+      erkundet: $("erkundet").textContent,
+      hinweis: $("schluessel-hinweis").textContent,
+      namen: { a: dateien.a?.name ?? null, b: dateien.b?.name ?? null },
+      groessen: { a: dateien.a?.size ?? null, b: dateien.b?.size ?? null },
+      ...zusatz,
+    };
+    localStorage.setItem(SCHLUESSEL_STAND, JSON.stringify(stand));
+  } catch (e) {
+    // Voller oder gesperrter Speicher darf die Arbeit nicht anhalten.
+    console.warn("Stand nicht speicherbar:", e);
+  }
+}
+
+function standLesen() {
+  try {
+    return JSON.parse(localStorage.getItem(SCHLUESSEL_STAND) || "null");
+  } catch { return null }
+}
+
+/* ---- Dateiverweise in IndexedDB ---- */
+
+function db() {
+  return new Promise((ok, fehler) => {
+    const a = indexedDB.open(LAGER, 1);
+    a.onupgradeneeded = () => a.result.createObjectStore("verweise");
+    a.onsuccess = () => ok(a.result);
+    a.onerror = () => fehler(a.error);
+  });
+}
+
+async function verweisMerken(seite, verweis) {
+  if (!verweis) return;
+  try {
+    const d = await db();
+    await new Promise((ok, fehler) => {
+      const t = d.transaction("verweise", "readwrite");
+      t.objectStore("verweise").put(verweis, seite);
+      t.oncomplete = ok; t.onerror = () => fehler(t.error);
+    });
+  } catch (e) { console.warn("Verweis nicht merkbar:", e) }
+}
+
+async function verweisHolen(seite) {
+  try {
+    const d = await db();
+    return await new Promise((ok, fehler) => {
+      const t = d.transaction("verweise", "readonly");
+      const a = t.objectStore("verweise").get(seite);
+      a.onsuccess = () => ok(a.result || null);
+      a.onerror = () => fehler(a.error);
+    });
+  } catch { return null }
+}
+
+async function vergessen() {
+  localStorage.removeItem(SCHLUESSEL_STAND);
+  try {
+    const d = await db();
+    const t = d.transaction("verweise", "readwrite");
+    t.objectStore("verweise").clear();
+  } catch {}
+  location.reload();
+}
+
+/** Öffnet über den Systemdialog — nur so entsteht ein merkbarer Verweis. */
+async function ueberDialog(seite) {
+  try {
+    const [verweis] = await window.showOpenFilePicker({
+      types: [{ description: "XML", accept: { "text/xml": [".xml"] } }],
+      multiple: false,
+    });
+    await verweisMerken(seite, verweis);
+    await uebernehmen(seite, await verweis.getFile());
+  } catch (e) {
+    if (e?.name !== "AbortError") console.warn(e);
+  }
+}
+
+/** Stellt die zuletzt benutzten Dateien wieder her, soweit erlaubt. */
+async function wiederherstellen() {
+  const stand = standLesen();
+  if (!stand) return;
+
+  // Einstellungen zuerst — sie gelten auch ohne Dateien.
+  if (stand.kandidaten?.length) {
+    const wahl = $("schluessel");
+    wahl.innerHTML = "";
+    for (const k of stand.kandidaten) {
+      const o = document.createElement("option");
+      o.value = k.v; o.textContent = k.t; wahl.append(o);
+    }
+    wahl.value = stand.schluessel ?? "";
+  }
+  if (stand.datensatz) $("datensatz").value = stand.datensatz;
+  if (stand.erkundet) $("erkundet").textContent = stand.erkundet;
+  if (stand.hinweis) $("schluessel-hinweis").textContent = stand.hinweis;
+  if (stand.datensatz || stand.kandidaten?.length) $("aufbau").classList.remove("verborgen");
+
+  // Dann die Dateien, wenn der Browser den Verweis noch hergibt.
+  let wieder = 0;
+  for (const seite of ["a", "b"]) {
+    const verweis = await verweisHolen(seite);
+    if (!verweis) continue;
+    try {
+      const erlaubt = await verweis.queryPermission?.({ mode: "read" });
+      if (erlaubt === "granted") {
+        dateien[seite] = await verweis.getFile();
+        $("name-" + seite).textContent = dateien[seite].name;
+        $("groesse-" + seite).textContent = groesse(dateien[seite].size);
+        wieder++;
+      } else {
+        // Ohne Nachfrage geht es nicht — der Browser verlangt eine Geste.
+        $("name-" + seite).textContent = verweis.name;
+        $("groesse-" + seite).innerHTML =
+          `<button type="button" class="mini" data-freigeben="${seite}">wieder öffnen</button>`;
+      }
+    } catch { /* Verweis ins Leere */ }
+  }
+  $("starten").disabled = !(dateien.a && dateien.b);
+
+  if (stand.bericht) {
+    zeigeGemerktenBericht(stand);
+  }
+  return wieder;
+}
+
+/** Zeigt den zuletzt erzeugten Bericht, mit deutlichem Hinweis auf sein Alter. */
+function zeigeGemerktenBericht(stand) {
+  const alter = Math.round((Date.now() - stand.zeit) / 60000);
+  const wann = alter < 1 ? "gerade eben"
+    : alter < 60 ? `vor ${viele(alter, "Minute", "Minuten")}`
+    : alter < 1440 ? `vor ${viele(Math.round(alter / 60), "Stunde", "Stunden")}`
+    : `vor ${viele(Math.round(alter / 1440), "Tag", "Tagen")}`;
+
+  $("ergebnis").innerHTML =
+    `<div class="karte" style="display:flex;gap:.75rem;align-items:center;flex-wrap:wrap">
+       <span class="hinweis">Letzter Abgleich ${wann}
+         (${escape(stand.namen?.a ?? "?")} gegen ${escape(stand.namen?.b ?? "?")})</span>
+       <div style="flex:1"></div>
+       <button type="button" class="mini" id="vergessen">Verlauf löschen</button>
+     </div>`;
+  const zuvor = document.createElement("div");
+  $("ergebnis").append(zuvor);
+  try {
+    zeigeBericht(stand.bericht, stand.datensatz, stand.schluessel, zuvor);
+  } catch (fehler) {
+    console.error("gemerkter Bericht:", fehler);
+    zuvor.innerHTML = `<div class="karte hinweis">Der gemerkte Bericht ließ sich nicht anzeigen
+      (${escape(String(fehler.message ?? fehler))}). Ein neuer Abgleich hilft.</div>`;
+  }
+}
+
+document.addEventListener("click", async ev => {
+  const s = ev.target?.dataset?.freigeben;
+  if (s) {
+    const verweis = await verweisHolen(s);
+    if (verweis && (await verweis.requestPermission({ mode: "read" })) === "granted") {
+      await uebernehmen(s, await verweis.getFile());
+    }
+  }
+  if (ev.target?.id === "vergessen") vergessen();
+});
+
 ablageEinrichten("a");
 ablageEinrichten("b");
 $("starten").disabled = true;
+
+// Der Systemdialog ist der einzige Weg zu einem dauerhaften Dateiverweis.
+// Wo es ihn gibt, wird er angeboten; sonst bleibt die gewöhnliche Auswahl,
+// und gemerkt werden nur Einstellungen und Bericht.
+if (typeof window.showOpenFilePicker === "function") {
+  for (const b of document.querySelectorAll(".merkbar")) {
+    b.hidden = false;
+    b.addEventListener("click", () => ueberDialog(b.dataset.dialog));
+  }
+}
+
+wiederherstellen();
 </script>
 </body>
 </html>

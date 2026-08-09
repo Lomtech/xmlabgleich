@@ -27,8 +27,9 @@ Reichweiten. Deshalb vier getrennte Ebenen:
 |---|---|---|---|
 | 1 | **Feldbezeichnungen** | Dieselben Felder? | Schema geändert — alle Datensätze |
 | 2 | **Indextabelle** | Dieselbe Anordnung, an welcher Stelle? | Erzeugung geändert — alle Datensätze |
-| 3 | **Ränder** | Dieselben Werte, in welchem Feld und Datensatz? | Datenfehler — einzelne Datensätze |
-| 4 | **Fingerabdruck** | Überhaupt eine Abweichung? | erster Schritt, ein Wert |
+| 3 | **Satzfolge** | Dieselbe Reihenfolge der Datensätze? | andere Sortierung — je nach Ladeweg erheblich |
+| 4 | **Ränder** | Dieselben Werte, in welchem Feld und Datensatz? | Datenfehler — einzelne Datensätze |
+| 5 | **Fingerabdruck** | Überhaupt eine Abweichung? | erster Schritt, ein Wert |
 
 **Ebene 2** ist mehr als ein Hash: Die Feldbezeichnungen bekommen Nummern in
 der Reihenfolge ihres ersten Auftretens, und jeder Datensatz wird zu einer
@@ -44,7 +45,15 @@ Verglichen werden dabei alle Feldfolgen, nicht nur die häufigste: Ist ein
 einzelner Datensatz von 401 umgestellt, bleibt die Regelfolge auf beiden
 Seiten gleich und die Abweichung steckt in einer seltenen.
 
-**Ebene 4** fasst alle drei zu einem Wert zusammen, kurz genug zum Vorlesen:
+**Ebene 3** ist als einzige **nicht kommutativ**. Alle anderen Prüfungen
+überstehen eine Umsortierung mit Absicht — dieselben Sätze bleiben dieselben
+Sätze. Ob eine geänderte Reihenfolge stört, hängt aber vom Ladeweg ab: Manche
+Verarbeitungen arbeiten in Dokumentfolge und bauen Abhängigkeiten zwischen
+Sätzen auf. Das Werkzeug stellt deshalb fest und bewertet nicht — es meldet
+„Gleiche Werte, andere Reihenfolge" als eigenes Urteil und benennt den ersten
+Satz, ab dem die Folgen auseinanderlaufen.
+
+**Ebene 5** fasst alle vier zu einem Wert zusammen, kurz genug zum Vorlesen:
 
 ```
 52BC-3948-BDC6-5227
@@ -62,14 +71,44 @@ Er trägt außerdem eine **Selbstkontrolle**: Jeder Zellwert geht in genau eine
 Spalte und genau eine Zeile ein, also müssen beide Achsen dieselbe Summe
 ergeben. Weichen sie ab, ist nicht die Datei falsch, sondern der Abdruck.
 
-### Was die Ebenen an echten Daten trennen
+### Was die Ebenen trennen
 
-| Änderung | Fingerabdruck | Feldnamen | Anordnung | Werte |
-|---|---|---|---|---|
-| nur umformatiert | gleich | gleich | gleich | gleich |
-| zwei Felder vertauscht | ≠ | gleich | **≠** | gleich |
-| ein Wert geändert | ≠ | gleich | gleich | **≠** |
-| ein Datensatz entfernt | ≠ | gleich | gleich | **≠** |
+| Änderung | Urteil | Feldnamen | Anordnung | Satzfolge | Werte |
+|---|---|---|---|---|---|
+| nur umformatiert | ✓ Übereinstimmung | = | = | = | = |
+| zwei Felder vertauscht | ✗ Abweichungen | = | **≠** | = | = |
+| Datensätze umsortiert | **! Gleiche Werte, andere Reihenfolge** | = | = | **≠** | = |
+| eine Ziffer geändert | ✗ Abweichungen | = | = | = | **≠** |
+| ein Datensatz entfernt | ✗ Abweichungen | = | = | ≠ | **≠** |
+
+### Und welcher Wert?
+
+Der Fingerabdruck ist datenfrei, damit er einen Betrieb verlassen darf. Beim
+Vergleich zweier Dateien auf demselben Rechner schützt das aber nichts — es
+verhindert nur die Antwort. Deshalb läuft nach dem Abgleich ein **zweiter,
+gezielter Durchlauf**: Er liest nur die Gruppen und Felder nach, die der erste
+als abweichend gemeldet hat, und stellt die Klartextwerte gegenüber. Bei
+10.000 Datensätzen sind das zwei bis drei Sätze.
+
+```
+Schlüssel     Feld                      Quelle     Ziel
+2015-01-01    GENERALDATA/ISSUEPRICE    83.9261    83.9267
+```
+
+Die abweichenden Zeichen sind hervorgehoben — bei einer vertauschten Ziffer in
+einem langen Wert ist das der Unterschied zwischen „irgendwas ist anders" und
+„hier".
+
+### Über das Neuladen hinweg
+
+Einstellungen und der letzte Bericht liegen in `localStorage`, die
+Dateiverweise in IndexedDB. Nach einem Neuladen ist der Bericht sofort wieder
+da; die Dateien selbst werden nie gespeichert, nur der Verweis darauf — beim
+nächsten Öffnen fragt der Browser nach Erlaubnis.
+
+Ein dauerhafter Verweis entsteht nur über den Systemdialog
+(`showOpenFilePicker`), deshalb steht neben der gewöhnlichen Dateiauswahl der
+Knopf **merkbar öffnen**.
 
 ## Wie
 

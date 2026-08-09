@@ -26,6 +26,11 @@ const FNV_PRIM: u32 = 16777619;
 /// der Abdruck soll unabhängig von der Dateigröße klein bleiben.
 const ANORDNUNGEN_HOECHSTENS: usize = 1000;
 
+/// So viele Schlüssel werden im Klartext gemerkt, um die erste
+/// Abweichung in der Satzfolge benennen zu können. Mehr braucht es nicht:
+/// Wer die erste Stelle kennt, findet den Rest selbst.
+const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 5000;
+
 #[inline]
 fn fnv_weiter(h: u32, daten: &[u8]) -> u32 {
     let mut h = h;
@@ -81,6 +86,10 @@ pub struct Abdruck {
     /// verändern, deshalb werden Leerzeichen erst mitgehasht, wenn ihnen
     /// wieder Inhalt folgt.
     text_wartend: usize,
+    /// Derselbe Text, den der Hash sieht — nur als Bytes, für die
+    /// Satzfolge. Nur Schlüsselfelder brauchen ihn, aber welches Element
+    /// ein Schlüssel ist, steht erst beim Schließen fest.
+    text_klartext: Vec<u8>,
 
     /// Ab welcher Tiefe wir uns in einem Datensatz befinden (None = außerhalb).
     im_datensatz_ab: Option<usize>,
@@ -88,6 +97,8 @@ pub struct Abdruck {
     /// Ein Datensatz ist klein; das Zwischenlagern kostet nichts.
     laufende_felder: Vec<(Vec<u8>, u32)>,
     laufender_schluessel: Vec<Option<u32>>,
+    /// Schlüssel des laufenden Datensatzes im Klartext, für die Satzfolge.
+    laufender_schluessel_text: Vec<Option<Vec<u8>>>,
 
     /// Ebene 2 — die Indextabelle: Feldbezeichnungen in der Reihenfolge ihres
     /// ersten Auftretens. Sie ist die gemeinsame Sprache, in der sich
@@ -103,6 +114,19 @@ pub struct Abdruck {
     /// abweicht. Die Folgen sagen, *an welcher Stelle* — und das ist der
     /// Unterschied zwischen einem Befund und einer Diagnose.
     pub anordnungen: HashMap<Vec<u32>, u64>,
+
+    /// Hash über die Schlüssel in **Dokumentreihenfolge** — bewusst nicht
+    /// kommutativ, im Gegensatz zu allem anderen hier.
+    ///
+    /// Die Ränder sollen eine Umsortierung überstehen, weil dieselben Sätze
+    /// dieselben Sätze bleiben. Ob eine geänderte Satzfolge hinnehmbar ist,
+    /// hängt aber vom Verarbeitungsweg ab und nicht von der Annahme dieses
+    /// Werkzeugs. Es stellt sie deshalb fest und überlässt die Bewertung dem,
+    /// der die Strecke kennt.
+    satzfolge: u32,
+    /// Die ersten Schlüssel im Klartext, um die erste Abweichung benennen zu
+    /// können statt nur „irgendwo anders sortiert".
+    pub erste_schluessel: Vec<Vec<u8>>,
 
     // ---- Ergebnis
     pub spalten: HashMap<Vec<u8>, Aggregat>,
@@ -147,6 +171,9 @@ pub struct Gesamt {
     /// Nur die Inhalte. Der Wert, der übrig bleibt, wenn Struktur und
     /// Anordnung übereinstimmen.
     pub ausprägungen: u32,
+    /// Nur die Reihenfolge der Datensätze. Nicht kommutativ — eine
+    /// Umsortierung ist hier sichtbar und sonst nirgends.
+    pub satzfolge: u32,
 }
 
 impl Abdruck {
@@ -176,6 +203,7 @@ impl Abdruck {
         h = fnv_weiter(h, &s_xor.to_le_bytes());
         h = fnv_weiter(h, &self.struktur_wert().to_le_bytes());
         h = fnv_weiter(h, &self.anordnungs_wert().to_le_bytes());
+        h = fnv_weiter(h, &self.satzfolge.to_le_bytes());
         h = fnv_weiter(h, &self.datensaetze.to_le_bytes());
         h = fnv_weiter(h, &self.blaetter.to_le_bytes());
         h = fnv_weiter(h, &(self.spalten.len() as u64).to_le_bytes());
@@ -192,6 +220,7 @@ impl Abdruck {
             struktur: self.struktur_wert(),
             anordnung: self.anordnungs_wert(),
             ausprägungen: s_summe,
+            satzfolge: self.satzfolge,
         }
     }
 
@@ -262,13 +291,17 @@ impl Abdruck {
             text_hash: FNV_ANFANG,
             text_hat_inhalt: false,
             text_wartend: 0,
+            text_klartext: Vec::new(),
             im_datensatz_ab: None,
             laufende_felder: Vec::new(),
             laufender_schluessel: vec![None; schluessel.len()],
+            laufender_schluessel_text: vec![None; schluessel.len()],
             feld_index: Vec::new(),
             feld_nummer: HashMap::new(),
             laufende_folge: Vec::new(),
             anordnungen: HashMap::new(),
+            satzfolge: FNV_ANFANG,
+            erste_schluessel: Vec::new(),
             spalten: HashMap::new(),
             zeilen: vec![Aggregat::default(); eimer.max(1)],
             datensaetze: 0,
@@ -313,6 +346,21 @@ impl Abdruck {
     fn schliesse_datensatz(&mut self) {
         self.datensaetze += 1;
 
+        // Satzfolge: Reihenfolge zählt, deshalb fortlaufend gehasht statt
+        // aufsummiert. Ohne Schlüssel wird die laufende Nummer eingesetzt —
+        // dann sagt die Prüfung nur noch, dass gleich viele Sätze da sind.
+        let schluessel_text: Vec<u8> = self
+            .laufender_schluessel_text
+            .iter()
+            .map(|t| t.clone().unwrap_or_else(|| b"?".to_vec()))
+            .collect::<Vec<_>>()
+            .join(&b'|');
+        self.satzfolge = fnv_weiter(self.satzfolge, &schluessel_text);
+        self.satzfolge = fnv_weiter(self.satzfolge, b"\x1e");
+        if self.erste_schluessel.len() < ERSTE_SCHLUESSEL_HOECHSTENS {
+            self.erste_schluessel.push(schluessel_text);
+        }
+
         // Neue Folgen nur bis zur Grenze aufnehmen; bekannte immer zählen.
         // Ohne die Grenze könnte eine Datei mit lauter verschiedenen
         // Feldfolgen den Speicher füllen — der Abdruck soll konstant bleiben.
@@ -356,6 +404,9 @@ impl Abdruck {
         for t in &mut self.laufender_schluessel {
             *t = None;
         }
+        for t in &mut self.laufender_schluessel_text {
+            *t = None;
+        }
     }
 
     /// Ist der zuletzt geschlossene Pfad ein Schlüsselfeld? Liefert dessen Index.
@@ -378,6 +429,7 @@ impl Beobachter for Abdruck {
         self.text_hash = FNV_ANFANG;
         self.text_hat_inhalt = false;
         self.text_wartend = 0;
+        self.text_klartext.clear();
 
         if self.im_datensatz_ab.is_none() && self.passt_datensatz() {
             self.im_datensatz_ab = Some(self.pfad.len());
@@ -402,6 +454,13 @@ impl Beobachter for Abdruck {
 
             if let Some(k) = self.schluessel_index() {
                 self.laufender_schluessel[k] = Some(werthash);
+                // Für die Satzfolge wird der Klartext gebraucht: Ein Hash
+                // sagt nur, dass anders sortiert wurde, nicht ab welchem Satz.
+                self.laufender_schluessel_text[k] = Some(if self.text_hat_inhalt {
+                    self.text_klartext.clone()
+                } else {
+                    Vec::new()
+                });
             }
             // Die Anordnung wird ohne die Werte fortgeschrieben — sonst
             // ließe sich eine Umstellung nicht von einer Wertänderung
@@ -424,6 +483,7 @@ impl Beobachter for Abdruck {
         self.text_hash = FNV_ANFANG;
         self.text_hat_inhalt = false;
         self.text_wartend = 0;
+        self.text_klartext.clear();
 
         if self.ist_datensatz_ende() {
             self.im_datensatz_ab = None;
@@ -446,9 +506,15 @@ impl Beobachter for Abdruck {
             // innerhalb eines Werts nichts ändert.
             if self.text_wartend > 0 {
                 self.text_hash = fnv_weiter(self.text_hash, b" ");
+                if self.text_klartext.len() < 256 {
+                    self.text_klartext.push(b' ');
+                }
                 self.text_wartend = 0;
             }
             self.text_hash = fnv_weiter(self.text_hash, &[c]);
+            if self.text_klartext.len() < 256 {
+                self.text_klartext.push(c);
+            }
             self.text_hat_inhalt = true;
         }
     }

@@ -5,6 +5,7 @@
 //! Blöcken; verglichen werden am Ende zwei Ränder von einigen zehn Kilobyte.
 
 pub mod abdruck;
+pub mod einzelheiten;
 pub mod erkundung;
 pub mod scanner;
 pub mod wasm;
