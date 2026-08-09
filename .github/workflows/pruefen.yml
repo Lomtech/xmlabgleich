@@ -1,0 +1,29 @@
+# Prüft den Kern bei jeder Änderung und stellt sicher, dass die
+# veröffentlichte Datei zum Quelltext passt.
+#
+# Der zweite Teil ist der wichtigere: index.html enthält das übersetzte
+# WASM-Modul als Base64. Wer den Rust-Kern ändert und das Bauen vergisst,
+# veröffentlicht sonst weiter den alten Stand — ohne dass es auffällt.
+name: prüfen
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  kern:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add wasm32-unknown-unknown
+      - name: Prüfungen
+        run: cargo test --manifest-path kern/Cargo.toml
+      - name: Neu bauen und mit dem veröffentlichten Stand vergleichen
+        run: |
+          cp index.html /tmp/veroeffentlicht.html
+          ./bauen.sh
+          if ! cmp -s /tmp/veroeffentlicht.html index.html; then
+            echo "index.html passt nicht zum Quelltext — bitte ./bauen.sh laufen lassen und mitliefern."
+            exit 1
+          fi
