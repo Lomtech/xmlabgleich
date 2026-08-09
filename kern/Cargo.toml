@@ -1,0 +1,16 @@
+[package]
+name = "xmlabgleich"
+version = "0.1.0"
+edition = "2021"
+
+# rlib zusätzlich zu cdylib, damit der Kern ohne Browser geprüft werden kann.
+# Ein Scanner, den man nur im Browser testen kann, wird nicht ernsthaft getestet.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true

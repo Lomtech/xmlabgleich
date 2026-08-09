@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>xmlabgleich</title>
+<style>
+:root {
+  --grund: #ffffff; --text: #16181d; --gedaempft: #6b7280;
+  --rand: #e5e7eb; --feld: #f9fafb;
+  --gut: #15803d; --schlecht: #b91c1c; --warnung: #a16207; --betont: #1d4ed8;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --grund: #0f1115; --text: #e8eaed; --gedaempft: #9aa0a6;
+    --rand: #2a2f3a; --feld: #171a21;
+    --gut: #4ade80; --schlecht: #f87171; --warnung: #fbbf24; --betont: #60a5fa;
+  }
+}
+* { box-sizing: border-box }
+body {
+  margin: 0; padding: 2rem 1.25rem 4rem;
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  background: var(--grund); color: var(--text);
+}
+.mitte { max-width: 1000px; margin: 0 auto }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem }
+h2 { font-size: 1.05rem; margin: 2rem 0 .75rem }
+.unter { color: var(--gedaempft); margin: 0 0 1.75rem; max-width: 62ch }
+.karte { border: 1px solid var(--rand); border-radius: 10px; padding: 1rem; margin-bottom: 1rem }
+.paar { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem }
+@media (max-width: 720px) { .paar { grid-template-columns: 1fr } }
+.ablage {
+  border: 2px dashed var(--rand); border-radius: 10px; padding: 1.25rem;
+  text-align: center; transition: border-color .15s;
+}
+.ablage.drueber { border-color: var(--betont) }
+.ablage .name { font-weight: 600; margin-top: .5rem; word-break: break-all }
+.ablage .groesse { color: var(--gedaempft); font-size: .85rem }
+label.knopf, button {
+  font: inherit; padding: .45rem .9rem; border-radius: 7px;
+  border: 1px solid var(--rand); background: var(--feld); color: var(--text); cursor: pointer;
+}
+button.haupt { background: var(--betont); border-color: var(--betont); color: #fff; font-weight: 600 }
+button:disabled { opacity: .45; cursor: not-allowed }
+input[type=file] { display: none }
+input[type=text], select {
+  font: inherit; padding: .4rem .6rem; border-radius: 7px;
+  border: 1px solid var(--rand); background: var(--feld); color: var(--text); width: 100%;
+}
+.reihe { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap }
+.balken { height: 5px; background: var(--rand); border-radius: 3px; overflow: hidden; margin-top: .75rem }
+.balken > div { height: 100%; background: var(--betont); width: 0; transition: width .15s }
+table { width: 100%; border-collapse: collapse; font-size: .9rem }
+th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--rand) }
+th { color: var(--gedaempft); font-weight: 600; font-size: .8rem; text-transform: uppercase; letter-spacing: .03em }
+td.zahl, th.zahl { text-align: right; font-variant-numeric: tabular-nums }
+.rahmen { overflow-x: auto; border: 1px solid var(--rand); border-radius: 10px }
+.urteil { padding: 1rem 1.25rem; border-radius: 10px; font-weight: 600; display: flex; gap: .75rem; align-items: center }
+.urteil.gut { background: color-mix(in srgb, var(--gut) 12%, transparent); color: var(--gut) }
+.urteil.schlecht { background: color-mix(in srgb, var(--schlecht) 12%, transparent); color: var(--schlecht) }
+.urteil .zeichen { font-size: 1.5rem }
+.urteil .text { font-weight: 400; color: var(--text) }
+.marke { display: inline-block; padding: .1rem .45rem; border-radius: 5px; font-size: .78rem; font-weight: 600 }
+.marke.gut { background: color-mix(in srgb, var(--gut) 18%, transparent); color: var(--gut) }
+.marke.schlecht { background: color-mix(in srgb, var(--schlecht) 18%, transparent); color: var(--schlecht) }
+.marke.warnung { background: color-mix(in srgb, var(--warnung) 18%, transparent); color: var(--warnung) }
+code, .pfad { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .87em }
+.hinweis { color: var(--gedaempft); font-size: .87rem }
+.verborgen { display: none }
+ul.grenzen { color: var(--gedaempft); font-size: .88rem; padding-left: 1.1rem; margin: .5rem 0 0 }
+ul.grenzen li { margin: .25rem 0 }
+</style>
+</head>
+<body>
+<div class="mitte">
+
+  <h1>xmlabgleich</h1>
+  <p class="unter">
+    Vergleicht zwei XML-Dateien beliebiger Größe und zeigt, welches Feld in welchem
+    Datensatz abweicht. Die Dateien werden im Browser gelesen und verlassen diesen
+    Rechner nicht.
+  </p>
+
+  <div class="paar">
+    <div class="ablage" id="ablage-a">
+      <label class="knopf">Quelle wählen<input type="file" id="datei-a" accept=".xml,text/xml,application/xml"></label>
+      <div class="name" id="name-a"></div>
+      <div class="groesse" id="groesse-a">oder Datei hierher ziehen</div>
+    </div>
+    <div class="ablage" id="ablage-b">
+      <label class="knopf">Ziel wählen<input type="file" id="datei-b" accept=".xml,text/xml,application/xml"></label>
+      <div class="name" id="name-b"></div>
+      <div class="groesse" id="groesse-b">oder Datei hierher ziehen</div>
+    </div>
+  </div>
+
+  <div class="karte verborgen" id="aufbau">
+    <h2 style="margin-top:0">Aufbau</h2>
+    <p class="hinweis" id="erkundet"></p>
+    <div class="reihe" style="margin-top:.75rem">
+      <div style="flex:1;min-width:260px">
+        <div class="hinweis">Datensatz-Element</div>
+        <input type="text" id="datensatz" spellcheck="false" autocomplete="off">
+      </div>
+      <div style="flex:1;min-width:220px">
+        <div class="hinweis">Schlüsselfeld (im Datensatz)</div>
+        <select id="schluessel"></select>
+      </div>
+    </div>
+    <p class="hinweis" id="schluessel-hinweis" style="margin-top:.6rem"></p>
+    <div class="reihe" style="margin-top:1rem">
+      <button class="haupt" id="starten">Abgleichen</button>
+      <span class="hinweis" id="fortschritt-text"></span>
+    </div>
+    <div class="balken verborgen" id="balken"><div id="fuell"></div></div>
+  </div>
+
+  <div id="ergebnis"></div>
+
+</div>
+
+<script>
+"use strict";
+
+/* Das WASM-Modul steckt als Base64 in dieser Datei. Deshalb läuft sie auch
+   per Doppelklick von der Festplatte — ohne Server, ohne Installation, und
+   ohne dass irgendetwas ins Netz geht. */
+const WASM_BASE64 = "%%WASM%%";
+
+const $ = id => document.getElementById(id);
+const zahl = n => (n ?? 0).toLocaleString("de-DE");
+
+/** Beugt mit — ein Bericht, der „1 Datensätze" schreibt, wird nicht ernst genommen. */
+const viele = (n, einzahl, mehrzahl) => `${zahl(n)} ${n === 1 ? einzahl : mehrzahl}`;
+const groesse = b => {
+  const e = ["B", "kB", "MB", "GB", "TB"];
+  let v = b, i = 0;
+  while (v >= 1000 && i < e.length - 1) { v /= 1000; i++ }
+  return i === 0 ? `${b} B` : `${v.toFixed(1)} ${e[i]}`;
+};
+
+let modul = null;
+const dateien = { a: null, b: null };
+let erkundung = null;
+
+async function ladeModul() {
+  if (modul) return modul;
+  const roh = Uint8Array.from(atob(WASM_BASE64), c => c.charCodeAt(0));
+  const { instance } = await WebAssembly.instantiate(roh, {});
+  modul = instance.exports;
+  return modul;
+}
+
+/** Liest das Ergebnis-JSON aus dem Ausgabepuffer. */
+function ergebnisLesen(w) {
+  const len = w.ausgabe_len();
+  const roh = new Uint8Array(w.memory.buffer, w.ausgabe_ptr(), len);
+  return JSON.parse(new TextDecoder().decode(roh));
+}
+
+/**
+ * Schiebt eine Datei blockweise durch das Modul.
+ *
+ * Der Speicher des Moduls kann durch das Wachsen umziehen, deshalb wird die
+ * Sicht darauf bei jedem Block neu geholt — sonst schreibt man irgendwann in
+ * einen verwaisten Puffer.
+ */
+async function durchschieben(w, datei, blockAufrufen, melden) {
+  const max = w.puffer_groesse();
+  const leser = datei.stream().getReader();
+  let rest = new Uint8Array(0), gelesen = 0;
+
+  for (;;) {
+    const { done, value } = await leser.read();
+    if (done) break;
+    gelesen += value.length;
+
+    let block;
+    if (rest.length) {
+      block = new Uint8Array(rest.length + value.length);
+      block.set(rest); block.set(value, rest.length);
+    } else block = value;
+
+    let ab = 0;
+    while (block.length - ab >= max) {
+      new Uint8Array(w.memory.buffer, w.puffer_ptr(), max).set(block.subarray(ab, ab + max));
+      blockAufrufen(max);
+      ab += max;
+    }
+    rest = block.subarray(ab);
+
+    if (rest.length) {
+      new Uint8Array(w.memory.buffer, w.puffer_ptr(), rest.length).set(rest);
+      blockAufrufen(rest.length);
+      rest = new Uint8Array(0);
+    }
+    if (melden) melden(gelesen, datei.size);
+  }
+}
+
+/* ─────────────────────────────────────────── Dateiauswahl */
+
+function ablageEinrichten(seite) {
+  const ablage = $("ablage-" + seite);
+  const eingabe = $("datei-" + seite);
+
+  eingabe.addEventListener("change", () => {
+    if (eingabe.files[0]) uebernehmen(seite, eingabe.files[0]);
+  });
+  ablage.addEventListener("dragover", e => { e.preventDefault(); ablage.classList.add("drueber") });
+  ablage.addEventListener("dragleave", () => ablage.classList.remove("drueber"));
+  ablage.addEventListener("drop", e => {
+    e.preventDefault();
+    ablage.classList.remove("drueber");
+    const d = e.dataTransfer.files[0];
+    if (d) uebernehmen(seite, d);
+  });
+}
+
+async function uebernehmen(seite, datei) {
+  dateien[seite] = datei;
+  $("name-" + seite).textContent = datei.name;
+  $("groesse-" + seite).textContent = groesse(datei.size);
+  $("ergebnis").innerHTML = "";
+
+  // Der Aufbau wird an der Quelle erkundet, sobald sie da ist.
+  if (seite === "a") await erkunden(datei);
+  $("starten").disabled = !(dateien.a && dateien.b);
+}
+
+async function erkunden(datei) {
+  const w = await ladeModul();
+  $("aufbau").classList.remove("verborgen");
+  $("erkundet").textContent = "Aufbau wird gelesen …";
+  $("starten").disabled = true;
+
+  const t0 = performance.now();
+  w.erkundung_start();
+  await durchschieben(w, datei, len => w.erkundung_block(len));
+  w.erkundung_fertig();
+  erkundung = ergebnisLesen(w);
+
+  const s = ((performance.now() - t0) / 1000).toFixed(1);
+  $("erkundet").textContent =
+    `${zahl(erkundung.elemente)} Elemente, ${zahl(erkundung.pfadeGesamt)} verschiedene Pfade — in ${s}s gelesen.`;
+
+  $("datensatz").value = erkundung.datensatz || "";
+
+  const wahl = $("schluessel");
+  wahl.innerHTML = "";
+  const k = erkundung.schluesselKandidaten || [];
+  if (!k.length) {
+    wahl.innerHTML = '<option value="">— kein Feld gefunden —</option>';
+    $("schluessel-hinweis").textContent =
+      "Kein Feld kommt in jedem Datensatz genau einmal vor. Ohne Schlüssel bleibt nur die Spaltenachse.";
+  } else {
+    for (const kand of k) {
+      const o = document.createElement("option");
+      o.value = kand.feld;
+      o.textContent = `${kand.feld} — ${zahl(kand.verschieden)} verschiedene Werte`;
+      wahl.append(o);
+    }
+    const bester = k[0];
+    const eindeutig = bester.verschieden >= erkundung.datensaetze;
+    $("schluessel-hinweis").textContent = eindeutig
+      ? `${bester.feld} ist eindeutig: ${zahl(bester.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen.`
+      : `Achtung: ${bester.feld} hat nur ${zahl(bester.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen — mehrere Datensätze fallen damit zusammen.`;
+  }
+  $("starten").disabled = !(dateien.a && dateien.b);
+}
+
+/* ─────────────────────────────────────────── Abgleich */
+
+const EIMER = 4096;
+
+async function abdruckVon(w, datei, konfig, melden) {
+  const roh = new TextEncoder().encode(konfig);
+  new Uint8Array(w.memory.buffer, w.puffer_ptr(), roh.length).set(roh);
+  w.abdruck_start(roh.length, EIMER);
+  await durchschieben(w, datei, len => w.abdruck_block(len), melden);
+  w.abdruck_fertig();
+  return ergebnisLesen(w);
+}
+
+$("starten").addEventListener("click", async () => {
+  const w = await ladeModul();
+  const datensatz = $("datensatz").value.trim();
+  const schluessel = $("schluessel").value;
+  if (!datensatz) { alert("Bitte das Datensatz-Element angeben."); return }
+
+  const konfig = schluessel ? `${datensatz}\n${schluessel}` : datensatz;
+  $("starten").disabled = true;
+  $("balken").classList.remove("verborgen");
+  $("ergebnis").innerHTML = "";
+
+  const t0 = performance.now();
+  const melden = (name, anteilBasis) => (gelesen, gesamt) => {
+    const anteil = (anteilBasis + (gelesen / gesamt) * 50);
+    $("fuell").style.width = anteil + "%";
+    $("fortschritt-text").textContent = `${name}: ${groesse(gelesen)} von ${groesse(gesamt)}`;
+  };
+
+  const a = await abdruckVon(w, dateien.a, konfig, melden("Quelle", 0));
+  const b = await abdruckVon(w, dateien.b, konfig, melden("Ziel", 50));
+
+  const dauer = (performance.now() - t0) / 1000;
+  const bytes = dateien.a.size + dateien.b.size;
+  $("fortschritt-text").textContent =
+    `${groesse(bytes)} in ${dauer.toFixed(1)}s (${groesse(bytes / dauer)}/s)`;
+  $("balken").classList.add("verborgen");
+  $("starten").disabled = false;
+
+  zeigeBericht(vergleiche(a, b), datensatz, schluessel);
+});
+
+/* ─────────────────────────────────────────── Vergleich */
+
+function vergleiche(a, b) {
+  const spaltenA = new Map(a.spalten.map(s => [s[0], s]));
+  const spaltenB = new Map(b.spalten.map(s => [s[0], s]));
+  const allePfade = [...new Set([...spaltenA.keys(), ...spaltenB.keys()])].sort();
+
+  const spalten = [];
+  for (const p of allePfade) {
+    const x = spaltenA.get(p), y = spaltenB.get(p);
+    if (!x) { spalten.push({ pfad: p, art: "nur-ziel", a: null, b: y }); continue }
+    if (!y) { spalten.push({ pfad: p, art: "nur-quelle", a: x, b: null }); continue }
+    if (x[1] !== y[1] || x[2] !== y[2]) spalten.push({ pfad: p, art: "abweichend", a: x, b: y });
+  }
+
+  const eimer = [];
+  const n = Math.min(a.zeilen.length, b.zeilen.length);
+  for (let i = 0; i < n; i++) {
+    const x = a.zeilen[i], y = b.zeilen[i];
+    if (x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2]) eimer.push({ nr: i, a: x, b: y });
+  }
+
+  return {
+    a, b, spalten, eimer,
+    datensaetzeGleich: a.datensaetze === b.datensaetze,
+    bestanden: spalten.length === 0 && eimer.length === 0 && a.datensaetze === b.datensaetze,
+  };
+}
+
+/* ─────────────────────────────────────────── Bericht */
+
+function zeigeBericht(e, datensatz, schluessel) {
+  const t = [];
+  const proEimer = Math.max(1, Math.round(e.a.datensaetze / EIMER));
+
+  // Erster Schritt: ein einziger Wert. Er beantwortet die Frage, ob überhaupt
+  // etwas abweicht — und ist kurz genug, um ihn vorzulesen oder in ein Ticket
+  // zu schreiben, ohne dass eine Datei den Betrieb verlässt.
+  const gleich = e.a.gesamt === e.b.gesamt;
+  t.push(`<div class="karte" style="text-align:center">
+    <div class="hinweis">Fingerabdruck</div>
+    <div style="display:flex;gap:1.5rem;justify-content:center;align-items:center;flex-wrap:wrap;margin:.6rem 0">
+      <code style="font-size:1.15rem;letter-spacing:.04em">${e.a.gesamt}</code>
+      <span style="font-size:1.3rem;color:var(--${gleich ? "gut" : "schlecht"})">${gleich ? "=" : "≠"}</span>
+      <code style="font-size:1.15rem;letter-spacing:.04em">${e.b.gesamt}</code>
+    </div>
+    <div class="hinweis">${gleich
+      ? "Gleich — eine Abweichung ist damit sehr unwahrscheinlich, aber nicht ausgeschlossen. Die Ränder unten sind die eigentliche Prüfung."
+      : "Verschieden — die beiden Dateien tragen sicher nicht denselben Inhalt. Wo, sagen die drei Ebenen."}</div>
+    ${(!e.a.stimmig || !e.b.stimmig) ? `<div class="hinweis" style="color:var(--schlecht);margin-top:.5rem">
+      <b>Achtung:</b> Spalten- und Zeilenachse ergeben nicht dieselbe Summe. Der Abdruck selbst ist fehlerhaft.
+    </div>` : ""}
+  </div>`);
+
+  // Die drei Ebenen einzeln. Sie haben verschiedene Ursachen und verschiedene
+  // Reichweiten — eine geänderte Struktur betrifft jeden Datensatz, ein
+  // geänderter Wert nur einen. Verschmolzen zu einer Aussage wäre der Bericht
+  // feststellend statt diagnostisch.
+  const ebenen = [
+    { name: "Struktur", frage: "Dieselben Feldbezeichnungen?",
+      gleich: e.a.struktur === e.b.struktur,
+      folge: "Ein Feld heißt anders, fehlt oder ist neu — das betrifft jeden Datensatz. Alles Weitere ist Folge davon." },
+    { name: "Anordnung", frage: "Dieselbe Aneinanderreihung?",
+      gleich: e.a.anordnung === e.b.anordnung,
+      folge: "Die Felder stehen in anderer Folge. Bei einem Schema mit fester Reihenfolge ist das ein Fehler, sonst nur ein Hinweis auf eine andere Erzeugung." },
+    { name: "Ausprägungen", frage: "Dieselben Werte?",
+      gleich: e.a.auspraegungen === e.b.auspraegungen,
+      folge: "Einzelne Werte weichen ab — welche, steht unten." },
+  ];
+
+  t.push(`<div class="rahmen" style="margin-bottom:1rem"><table><thead><tr>
+    <th>Ebene</th><th></th><th></th>
+  </tr></thead><tbody>`);
+  for (const eb of ebenen) {
+    t.push(`<tr>
+      <td><b>${eb.name}</b><div class="hinweis">${eb.frage}</div></td>
+      <td style="width:1%"><span class="marke ${eb.gleich ? "gut" : "schlecht"}">${eb.gleich ? "gleich" : "abweichend"}</span></td>
+      <td class="hinweis">${eb.gleich ? "" : eb.folge}</td>
+    </tr>`);
+  }
+  t.push(`</tbody></table></div>`);
+
+  if (e.a.anordnungen !== e.b.anordnungen) {
+    t.push(`<div class="karte hinweis">Die Quelle kennt ${viele(e.a.anordnungen, "Feldfolge", "Feldfolgen")},
+      das Ziel ${viele(e.b.anordnungen, "Feldfolge", "Feldfolgen")} — die Datensätze sind
+      unterschiedlich einheitlich aufgebaut.</div>`);
+  }
+
+  // Ebene 2 aufgeschlüsselt: Wo genau unterscheidet sich der Aufbau?
+  if (e.a.struktur !== e.b.struktur || e.a.anordnung !== e.b.anordnung) {
+    t.push(strukturTabelle(e));
+  }
+
+  // Unterschiedlich viele Datensätze erklären fast jede weitere Abweichung:
+  // Fehlt ein Datensatz, fehlen zwangsläufig alle seine Felder. Das gehört
+  // nach vorn, sonst sucht jemand fünfzig Fehler statt einem.
+  const mengeAnders = !e.datensaetzeGleich;
+  const d = e.b.datensaetze - e.a.datensaetze;
+
+  t.push(`<div class="urteil ${e.bestanden ? "gut" : "schlecht"}">
+    <span class="zeichen">${e.bestanden ? "✓" : "✗"}</span>
+    <span>${e.bestanden ? "Übereinstimmung" : "Abweichungen"}
+      <span class="text">— ${e.bestanden
+        ? "Beide Dateien tragen dieselben Werte in denselben Feldern."
+        : mengeAnders
+          ? `Das Ziel hat ${zahl(Math.abs(d))} Datensatz${Math.abs(d) === 1 ? "" : "e"}
+             ${d < 0 ? "weniger" : "mehr"} als die Quelle (${zahl(e.a.datensaetze)} gegen ${zahl(e.b.datensaetze)}).`
+          : `${viele(e.spalten.length, "Feld", "Felder")} und ${viele(e.eimer.length, "Gruppe", "Gruppen")} weichen ab.`}</span>
+    </span></div>`);
+
+  if (mengeAnders && e.spalten.length) {
+    t.push(`<div class="karte hinweis">
+      Die ${zahl(e.spalten.length)} unten aufgeführten Felder sind
+      <b>Folge dieser Mengendifferenz</b>, nicht notwendigerweise eigene Fehler:
+      Mit einem fehlenden Datensatz fehlen alle Werte, die er trug.
+      Erst wenn die Datensatzzahl stimmt, sagt die Feldliste etwas über einzelne Werte aus.
+    </div>`);
+  }
+
+  t.push(`<div class="karte"><div class="paar">
+    ${seite("Quelle", dateien.a, e.a)}
+    ${seite("Ziel", dateien.b, e.b)}
+  </div></div>`);
+
+  // Spaltenachse
+  t.push(`<h2>Welches Feld?</h2>`);
+  if (!e.spalten.length) {
+    t.push(`<div class="karte"><span class="marke gut">gleich</span>
+      Alle ${zahl(e.a.spalten.length)} Felder stimmen überein.</div>`);
+  } else {
+    t.push(`<div class="rahmen"><table><thead><tr>
+      <th>Feld</th><th class="zahl">Quelle</th><th class="zahl">Ziel</th><th></th>
+    </tr></thead><tbody>`);
+    for (const s of e.spalten.slice(0, 200)) {
+      const marke = s.art === "nur-quelle" ? '<span class="marke warnung">fehlt im Ziel</span>'
+        : s.art === "nur-ziel" ? '<span class="marke warnung">nur im Ziel</span>'
+        : '<span class="marke schlecht">Werte abweichend</span>';
+      t.push(`<tr>
+        <td class="pfad">${escape(s.pfad)}</td>
+        <td class="zahl">${s.a ? zahl(s.a[3]) : "–"}</td>
+        <td class="zahl">${s.b ? zahl(s.b[3]) : "–"}</td>
+        <td>${marke}</td></tr>`);
+    }
+    if (e.spalten.length > 200) {
+      t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(e.spalten.length - 200)} weitere</td></tr>`);
+    }
+    t.push(`</tbody></table></div>`);
+  }
+
+  // Zeilenachse
+  t.push(`<h2>Welcher Datensatz?</h2>`);
+  if (!schluessel) {
+    t.push(`<div class="karte hinweis">Ohne Schlüsselfeld lässt sich nicht sagen,
+      welche Datensätze betroffen sind — nur welche Felder.</div>`);
+  } else if (!e.eimer.length) {
+    t.push(`<div class="karte"><span class="marke gut">gleich</span>
+      Alle ${zahl(EIMER)} Gruppen stimmen überein.</div>`);
+  } else {
+    const stellen = e.eimer.length * e.spalten.length;
+    t.push(`<div class="karte">
+      <b>${zahl(e.eimer.length)} von ${zahl(EIMER)} Gruppen ${e.eimer.length === 1 ? "weicht" : "weichen"} ab.</b>
+      Die Suche ist damit auf etwa ${viele(e.eimer.length * proEimer, "Datensatz", "Datensätze")}
+      eingegrenzt statt auf ${zahl(e.a.datensaetze)}.
+      ${e.spalten.length ? `Zusammen mit den abweichenden Feldern
+        ${stellen === 1 ? "bleibt <b>eine einzige mögliche Stelle</b>" : `bleiben ${zahl(stellen)} mögliche Stellen`}.` : ""}
+    </div>`);
+    t.push(`<div class="rahmen"><table><thead><tr>
+      <th>Gruppe</th><th class="zahl">Werte Quelle</th><th class="zahl">Werte Ziel</th><th class="zahl">Unterschied</th>
+    </tr></thead><tbody>`);
+    for (const g of e.eimer.slice(0, 50)) {
+      t.push(`<tr><td>${g.nr}</td>
+        <td class="zahl">${zahl(g.a[2])}</td>
+        <td class="zahl">${zahl(g.b[2])}</td>
+        <td class="zahl">${g.b[2] - g.a[2] > 0 ? "+" : ""}${zahl(g.b[2] - g.a[2])}</td></tr>`);
+    }
+    if (e.eimer.length > 50) {
+      t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(e.eimer.length - 50)} weitere</td></tr>`);
+    }
+    t.push(`</tbody></table></div>`);
+  }
+
+  t.push(`<h2>Nicht geprüft</h2><div class="karte"><ul class="grenzen">
+    <li>Die Reihenfolge der Datensätze — sie darf sich ändern, ohne dass es als Fehler gilt.</li>
+    <li>Attribute; verglichen werden Elementinhalte.</li>
+    <li>Ab zwei betroffenen Feldern ist die Kreuzung nicht mehr eindeutig:
+        Zeilen- und Spaltenachse markieren dann mehr Stellen, als tatsächlich abweichen.</li>
+    <li>Die Prüfwerte schützen vor Versehen, nicht vor absichtlicher Veränderung.</li>
+    ${e.a.ohneSchluessel || e.b.ohneSchluessel
+      ? `<li><b>${zahl(e.a.ohneSchluessel)} bzw. ${zahl(e.b.ohneSchluessel)} Datensätze ohne Schlüsselwert</b> —
+         für sie gilt die Zeilenachse nicht.</li>` : ""}
+  </ul></div>`);
+
+  $("ergebnis").innerHTML = t.join("");
+}
+
+/**
+ * Zeigt, wo sich der Aufbau unterscheidet.
+ *
+ * Verglichen werden die Feldfolgen als Namenslisten — nicht nur die
+ * häufigste. Ist ein einzelner Datensatz von 401 umgestellt, bleibt die
+ * häufigste Folge auf beiden Seiten gleich und die Abweichung steckt in einer
+ * seltenen. Genau die muss der Bericht finden.
+ */
+function strukturTabelle(e) {
+  const alsNamen = (abdruck) => (abdruck.folgen ?? []).map(f => ({
+    namen: f.felder.map(n => abdruck.feldIndex[n] ?? "?"),
+    anzahl: f.anzahl,
+  }));
+  const fa = alsNamen(e.a), fb = alsNamen(e.b);
+  const schluessel = f => f.namen.join("");
+
+  const inB = new Set(fb.map(schluessel));
+  const inA = new Set(fa.map(schluessel));
+  const nurQuelle = fa.filter(f => !inB.has(schluessel(f)));
+  const nurZiel = fb.filter(f => !inA.has(schluessel(f)));
+
+  if (!nurQuelle.length && !nurZiel.length) return "";
+
+  // Die abweichende Folge gegen die nächstverwandte der anderen Seite
+  // stellen: die, die die meisten Felder an derselben Stelle hat.
+  const naechste = (folge, kandidaten) => {
+    let beste = null, bestwert = -1;
+    for (const k of kandidaten) {
+      let treffer = 0;
+      for (let i = 0; i < Math.max(folge.namen.length, k.namen.length); i++) {
+        if (folge.namen[i] === k.namen[i]) treffer++;
+      }
+      if (treffer > bestwert) { bestwert = treffer; beste = k }
+    }
+    return beste;
+  };
+
+  const t = [`<div class="karte"><b>Aufbau eines Datensatzes</b>
+    <div class="hinweis" style="margin-bottom:.6rem">
+      ${[
+        nurQuelle.length ? `${viele(nurQuelle.length, "Feldfolge kommt", "Feldfolgen kommen")} nur in der Quelle vor` : "",
+        nurZiel.length ? `${viele(nurZiel.length, "Feldfolge kommt", "Feldfolgen kommen")} nur im Ziel vor` : "",
+      ].filter(Boolean).join(", ")}.
+    </div>`];
+
+  const paare = nurZiel.length
+    ? nurZiel.map(z => ({ ziel: z, quelle: naechste(z, fa) }))
+    : nurQuelle.map(q => ({ quelle: q, ziel: naechste(q, fb) }));
+
+  for (const paar of paare.slice(0, 3)) {
+    const q = paar.quelle?.namen ?? [], z = paar.ziel?.namen ?? [];
+    const mengeQ = new Set(q), mengeZ = new Set(z);
+    const zeilen = [];
+    for (let i = 0; i < Math.max(q.length, z.length); i++) {
+      const x = q[i], y = z[i];
+      let marke = "", art = "";
+      if (x === y) art = "";
+      else if (x === undefined) { art = "nur im Ziel"; marke = "warnung" }
+      else if (y === undefined) { art = "fehlt im Ziel"; marke = "warnung" }
+      else if (mengeQ.has(y) && mengeZ.has(x)) { art = "umgestellt"; marke = "warnung" }
+      else { art = "anderes Feld"; marke = "schlecht" }
+      zeilen.push({ pos: i + 1, x, y, art, marke });
+    }
+    const abweichend = zeilen.filter(z2 => z2.marke);
+    if (!abweichend.length) continue;
+
+    t.push(`<div class="hinweis" style="margin:.75rem 0 .35rem">
+      ${zahl(paar.quelle?.anzahl ?? 0)} Datensätze in der Quelle gegen
+      ${zahl(paar.ziel?.anzahl ?? 0)} im Ziel —
+      ${viele(abweichend.length, "Stelle weicht", "Stellen weichen")} ab.
+    </div>
+    <div class="rahmen"><table><thead><tr>
+      <th class="zahl">Nr.</th><th>Quelle</th><th>Ziel</th><th></th>
+    </tr></thead><tbody>`);
+    // Nur die Abweichungen samt einer Zeile Umgebung — die Folge kann lang sein.
+    const zeigen = new Set();
+    abweichend.forEach(a => { zeigen.add(a.pos - 1); zeigen.add(a.pos); zeigen.add(a.pos + 1) });
+    let ausgelassen = false;
+    for (const z2 of zeilen) {
+      if (!zeigen.has(z2.pos)) { ausgelassen = true; continue }
+      if (ausgelassen) {
+        t.push(`<tr><td colspan="4" class="hinweis">…</td></tr>`);
+        ausgelassen = false;
+      }
+      t.push(`<tr>
+        <td class="zahl">${z2.pos}</td>
+        <td class="pfad">${z2.x === undefined ? "–" : escape(z2.x)}</td>
+        <td class="pfad">${z2.y === undefined ? "–" : escape(z2.y)}</td>
+        <td>${z2.marke ? `<span class="marke ${z2.marke}">${z2.art}</span>` : ""}</td>
+      </tr>`);
+    }
+    t.push(`</tbody></table></div>`);
+  }
+
+  t.push(`</div>`);
+  return t.join("");
+}
+
+function seite(titel, datei, abdruck) {
+  return `<div>
+    <div class="hinweis">${titel}</div>
+    <div style="font-weight:600;word-break:break-all">${escape(datei.name)}</div>
+    <table style="margin-top:.5rem">
+      <tr><td>Datensätze</td><td class="zahl">${zahl(abdruck.datensaetze)}</td></tr>
+      <tr><td>Felder mit Wert</td><td class="zahl">${zahl(abdruck.blaetter)}</td></tr>
+      <tr><td>verschiedene Feldpfade</td><td class="zahl">${zahl(abdruck.spalten.length)}</td></tr>
+      <tr><td>Umfang</td><td class="zahl">${groesse(datei.size)}</td></tr>
+    </table></div>`;
+}
+
+function escape(s) {
+  return String(s).replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+ablageEinrichten("a");
+ablageEinrichten("b");
+$("starten").disabled = true;
+</script>
+</body>
+</html>
