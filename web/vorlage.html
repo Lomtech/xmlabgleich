@@ -123,6 +123,7 @@ button.mini:hover { color: var(--text); border-color: var(--betont) }
       </div>
     </div>
     <p class="hinweis" id="schluessel-hinweis" style="margin-top:.6rem"></p>
+    <p class="hinweis" id="untertabellen" style="margin-top:.35rem"></p>
     <div class="reihe" style="margin-top:1rem">
       <button class="haupt" id="starten">Abgleichen</button>
       <span class="hinweis" id="fortschritt-text"></span>
@@ -157,6 +158,7 @@ const groesse = b => {
 let modul = null;
 const dateien = { a: null, b: null };
 let erkundung = null;
+let untertabellen = [];   // Wiederholgruppen aus der Erkundung
 
 async function ladeModul() {
   if (modul) return modul;
@@ -260,6 +262,11 @@ async function erkunden(datei) {
     `${zahl(erkundung.elemente)} Elemente, ${zahl(erkundung.pfadeGesamt)} verschiedene Pfade — in ${s}s gelesen.`;
 
   $("datensatz").value = erkundung.datensatz || "";
+  untertabellen = (erkundung.untertabellen ?? []).map(u => u.pfad);
+  $("untertabellen").textContent = untertabellen.length
+    ? `${viele(untertabellen.length, "Wiederholgruppe wird", "Wiederholgruppen werden")} als eigene Tabelle behandelt: `
+      + untertabellen.slice(0, 6).join(", ") + (untertabellen.length > 6 ? " …" : "")
+    : "Keine Wiederholgruppen — der Datensatz ist flach.";
 
   const wahl = $("schluessel");
   wahl.innerHTML = "";
@@ -289,13 +296,29 @@ async function erkunden(datei) {
 
 const EIMER = 4096;
 
-async function abdruckVon(w, datei, konfig, melden) {
+async function abdruckVon(w, datei, konfig, melden, untertabellen = []) {
   const roh = new TextEncoder().encode(konfig);
   new Uint8Array(w.memory.buffer, w.puffer_ptr(), roh.length).set(roh);
-  w.abdruck_start(roh.length, EIMER);
-  await durchschieben(w, datei, len => w.abdruck_block(len), melden);
-  w.abdruck_fertig();
+  w.zerlegung_vorbereiten(roh.length, EIMER);
+  // Jede Wiederholgruppe wird eine eigene Tabelle. Ohne diese Anmeldung
+  // bliebe alles flach, und ein Tausch innerhalb einer Gruppe unsichtbar.
+  for (const u of untertabellen) {
+    const b = new TextEncoder().encode(u);
+    new Uint8Array(w.memory.buffer, w.puffer_ptr(), b.length).set(b);
+    w.zerlegung_untertabelle(b.length);
+  }
+  w.zerlegung_start();
+  await durchschieben(w, datei, len => w.zerlegung_block(len), melden);
+  w.zerlegung_fertig();
   return ergebnisLesen(w);
+}
+
+/** Bequemer Zugriff: eine Tabelle nach Namen. */
+function tabelle(abdruck, name) {
+  return (abdruck.tabellen ?? []).find(t => t.name === name);
+}
+function hauptTabelle(abdruck) {
+  return tabelle(abdruck, "") ?? { spalten: [], eimer: [], zeilen: 0, felder: 0 };
 }
 
 $("starten").addEventListener("click", async () => {
@@ -316,8 +339,8 @@ $("starten").addEventListener("click", async () => {
     $("fortschritt-text").textContent = `${name}: ${groesse(gelesen)} von ${groesse(gesamt)}`;
   };
 
-  const a = await abdruckVon(w, dateien.a, konfig, melden("Quelle", 0));
-  const b = await abdruckVon(w, dateien.b, konfig, melden("Ziel", 50));
+  const a = await abdruckVon(w, dateien.a, konfig, melden("Quelle", 0), untertabellen);
+  const b = await abdruckVon(w, dateien.b, konfig, melden("Ziel", 50), untertabellen);
 
   const dauer = (performance.now() - t0) / 1000;
   const bytes = dateien.a.size + dateien.b.size;
@@ -342,16 +365,19 @@ $("starten").addEventListener("click", async () => {
 });
 
 /** Holt die Klartextwerte der abweichenden Stellen aus beiden Dateien. */
-async function einzelheitenVon(w, datei, konfig, eimer, pfade) {
-  const roh = new TextEncoder().encode(konfig);
-  new Uint8Array(w.memory.buffer, w.puffer_ptr(), roh.length).set(roh);
-  w.einzelheiten_vorbereiten(roh.length, EIMER);
-  for (const nr of eimer) w.einzelheiten_eimer(nr);
-  for (const p of pfade) {
-    const b = new TextEncoder().encode(p);
+async function einzelheitenVon(w, datei, konfig, eimer, pfade, tab) {
+  const schreibe = (text) => {
+    const b = new TextEncoder().encode(text);
     new Uint8Array(w.memory.buffer, w.puffer_ptr(), b.length).set(b);
-    w.einzelheiten_pfad(b.length);
-  }
+    return b.length;
+  };
+  w.einzelheiten_vorbereiten(schreibe(konfig), EIMER);
+  // Dieselbe Zerlegung wie beim ersten Durchlauf — sonst zeigt der zweite auf
+  // andere Zeilen.
+  for (const u of untertabellen) w.zerlegung_untertabelle(schreibe(u));
+  w.einzelheiten_tabelle(schreibe(tab ?? ""));
+  for (const nr of eimer) w.einzelheiten_eimer(nr);
+  for (const p of pfade) w.einzelheiten_pfad(schreibe(p));
   w.einzelheiten_start();
   await durchschieben(w, datei, len => w.einzelheiten_block(len));
   w.einzelheiten_fertig();
@@ -364,30 +390,39 @@ async function zeigeEinzelheiten(w, e, konfig) {
     <div class="karte hinweis"><span class="loading">Die betroffenen Datensätze werden gelesen …</span></div>`;
   $("ergebnis").append(ziel);
 
-  // Nur die abweichenden Eimer und Felder — sonst läse man die Datei
-  // vollständig ein zweites Mal ein.
-  const eimer = e.eimer.map(g => g.nr);
-  const pfade = e.spalten.filter(s => s.art === "abweichend").map(s => s.pfad);
-  if (!pfade.length) { ziel.remove(); return }
+  // Je betroffener Tabelle ein gezielter Nachlauf — nur die abweichenden
+  // Eimer und Felder, sonst läse man die Datei vollständig ein zweites Mal.
+  const betroffen = (e.tabellen ?? []).filter(tb =>
+    tb.spalten.some(s => s.art === "abweichend") && tb.eimer.length);
+  if (!betroffen.length) { ziel.remove(); return }
 
-  const [ea, eb] = [
-    await einzelheitenVon(w, dateien.a, konfig, eimer, pfade),
-    await einzelheitenVon(w, dateien.b, konfig, eimer, pfade),
-  ];
+  const gegenueber = new Map();
+  let gekuerzt = false;
+  let gruppen = 0;
 
-  // Nach Schlüssel, Feld und laufender Nummer gegenüberstellen.
-  const tabelle = new Map();
-  const eintragen = (funde, seite) => {
-    for (const [schluessel, pfad, wert, folge] of funde.funde ?? []) {
-      const k = `${schluessel}\u001f${pfad}\u001f${folge}`;
-      if (!tabelle.has(k)) tabelle.set(k, { schluessel, pfad, folge });
-      tabelle.get(k)[seite] = wert;
-    }
-  };
-  eintragen(ea, "a");
-  eintragen(eb, "b");
+  for (const tb of betroffen.slice(0, 8)) {
+    const eimer = tb.eimer.map(g => g.nr);
+    const pfade = tb.spalten.filter(s => s.art === "abweichend").map(s => s.pfad);
+    gruppen += eimer.length;
 
-  const unterschiede = [...tabelle.values()].filter(z => z.a !== z.b);
+    const [ea, eb] = [
+      await einzelheitenVon(w, dateien.a, konfig, eimer, pfade, tb.name),
+      await einzelheitenVon(w, dateien.b, konfig, eimer, pfade, tb.name),
+    ];
+    gekuerzt = gekuerzt || ea.abgeschnitten || eb.abgeschnitten;
+
+    const eintragen = (funde, seite) => {
+      for (const [schluessel, pfad, wert, tabName] of funde.funde ?? []) {
+        const k = `${tabName}\u001f${schluessel}\u001f${pfad}`;
+        if (!gegenueber.has(k)) gegenueber.set(k, { schluessel, pfad, tabelle: tabName });
+        gegenueber.get(k)[seite] = wert;
+      }
+    };
+    eintragen(ea, "a");
+    eintragen(eb, "b");
+  }
+
+  const unterschiede = [...gegenueber.values()].filter(z => z.a !== z.b);
 
   if (!unterschiede.length) {
     ziel.innerHTML = `<h2>Welcher Wert?</h2>
@@ -399,11 +434,11 @@ async function zeigeEinzelheiten(w, e, konfig) {
   const t = [`<h2>Welcher Wert?</h2>
     <div class="karte hinweis" style="margin-bottom:.75rem">
       ${viele(unterschiede.length, "Stelle unterscheidet", "Stellen unterscheiden")} sich —
-      gefunden durch gezieltes Nachlesen ${eimer.length === 1
+      gefunden durch gezieltes Nachlesen ${gruppen === 1
         ? "der einen betroffenen Gruppe"
-        : `der ${zahl(eimer.length)} betroffenen Gruppen`}
+        : `der ${zahl(gruppen)} betroffenen Gruppen`}
       statt der ganzen Datei.
-      ${(ea.abgeschnitten || eb.abgeschnitten) ? "<b>Die Liste ist gekürzt.</b>" : ""}
+      ${gekuerzt ? "<b>Die Liste ist gekürzt.</b>" : ""}
     </div>
     <div class="rahmen"><table><thead><tr>
       <th>Schlüssel</th><th>Feld</th><th>Quelle</th><th>Ziel</th>
@@ -412,7 +447,9 @@ async function zeigeEinzelheiten(w, e, konfig) {
   for (const z of unterschiede.slice(0, 200)) {
     t.push(`<tr>
       <td class="pfad">${escape(z.schluessel)}</td>
-      <td class="pfad" style="font-size:.8em;opacity:.75">${escape(kurzerPfad(z.pfad))}${z.folge ? ` [${z.folge + 1}]` : ""}</td>
+      <td class="pfad" style="font-size:.8em;opacity:.75">${
+        z.tabelle ? `<span class="hinweis">${escape(kurzerPfad(z.tabelle))} ▸ </span>` : ""
+      }${escape(kurzerPfad(z.pfad))}</td>
       <td>${hervorheben(z.a, z.b)}</td>
       <td>${hervorheben(z.b, z.a)}</td>
     </tr>`);
@@ -451,8 +488,40 @@ function hervorheben(wert, andere) {
 /* ─────────────────────────────────────────── Vergleich */
 
 function vergleiche(a, b) {
-  const spaltenA = new Map(a.spalten.map(s => [s[0], s]));
-  const spaltenB = new Map(b.spalten.map(s => [s[0], s]));
+  // Über alle Tabellen: Haupttabelle und jede Wiederholgruppe.
+  const namenA = new Set((a.tabellen ?? []).map(t => t.name));
+  const namenB = new Set((b.tabellen ?? []).map(t => t.name));
+  const alleTabellen = [...new Set([...namenA, ...namenB])].sort();
+
+  const tabellen = alleTabellen.map(name => {
+    const ta = tabelle(a, name), tb = tabelle(b, name);
+    const sa = new Map((ta?.spalten ?? []).map(s => [s[0], s]));
+    const sb = new Map((tb?.spalten ?? []).map(s => [s[0], s]));
+    const pfade = [...new Set([...sa.keys(), ...sb.keys()])].sort();
+
+    const spalten = [];
+    for (const p of pfade) {
+      const x = sa.get(p), y = sb.get(p);
+      if (!x) { spalten.push({ pfad: p, art: "nur-ziel", a: null, b: y }); continue }
+      if (!y) { spalten.push({ pfad: p, art: "nur-quelle", a: x, b: null }); continue }
+      if (x[1] !== y[1] || x[2] !== y[2]) spalten.push({ pfad: p, art: "abweichend", a: x, b: y });
+    }
+    const eimer = [];
+    const n = Math.min(ta?.eimer?.length ?? 0, tb?.eimer?.length ?? 0);
+    for (let i = 0; i < n; i++) {
+      const x = ta.eimer[i], y = tb.eimer[i];
+      if (x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2]) eimer.push({ nr: i, a: x, b: y });
+    }
+    return {
+      name, ta, tb, spalten, eimer,
+      zeilenGleich: (ta?.zeilen ?? 0) === (tb?.zeilen ?? 0),
+      fehltIn: !ta ? "quelle" : !tb ? "ziel" : null,
+    };
+  });
+
+  const ha = hauptTabelle(a), hb = hauptTabelle(b);
+  const spaltenA = new Map((ha.spalten ?? []).map(s => [s[0], s]));
+  const spaltenB = new Map((hb.spalten ?? []).map(s => [s[0], s]));
   const allePfade = [...new Set([...spaltenA.keys(), ...spaltenB.keys()])].sort();
 
   const spalten = [];
@@ -464,9 +533,9 @@ function vergleiche(a, b) {
   }
 
   const eimer = [];
-  const n = Math.min(a.zeilen.length, b.zeilen.length);
+  const n = Math.min((ha.eimer ?? []).length, (hb.eimer ?? []).length);
   for (let i = 0; i < n; i++) {
-    const x = a.zeilen[i], y = b.zeilen[i];
+    const x = ha.eimer[i], y = hb.eimer[i];
     if (x[0] !== y[0] || x[1] !== y[1] || x[2] !== y[2]) eimer.push({ nr: i, a: x, b: y });
   }
 
@@ -475,12 +544,21 @@ function vergleiche(a, b) {
   // derselbe Bestand, auch wenn jeder einzelne Satz stimmt. Ob das im
   // konkreten Fall stört, entscheidet der Verarbeitungsweg, nicht dieses
   // Werkzeug; gemeldet wird es in jedem Fall.
-  const folgeGleich = a.satzfolge === b.satzfolge;
-  const werteGleich = spalten.length === 0 && eimer.length === 0
+  const folgeGleich = a.gesamt === b.gesamt
+    ? true
+    : JSON.stringify(a.ersteSchluessel) === JSON.stringify(b.ersteSchluessel);
+  // Über alle Tabellen: Eine Abweichung in einer Wiederholgruppe zählt
+  // genauso wie eine in der Haupttabelle.
+  const werteGleich = tabellen.every(t => !t.spalten.length && !t.eimer.length && t.zeilenGleich)
     && a.datensaetze === b.datensaetze;
 
+  // Zusammengefasst über alle Tabellen — die Abweichung kann in einer
+  // Wiederholgruppe stecken, nicht nur im Datensatz selbst.
+  const alleSpalten = tabellen.flatMap(tb => tb.spalten.map(s => ({ ...s, tabelle: tb.name })));
+  const alleEimer = tabellen.flatMap(tb => tb.eimer.map(g => ({ ...g, tabelle: tb.name })));
+
   return {
-    a, b, spalten, eimer,
+    a, b, spalten: alleSpalten, eimer: alleEimer, tabellen,
     // Mitgeführt, damit der Bericht für sich steht: Nach einem Neuladen sind
     // die Dateien nicht mehr geöffnet, der gemerkte Bericht soll trotzdem
     // vollständig anzeigbar sein.
@@ -525,16 +603,17 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   // feststellend statt diagnostisch.
   const ebenen = [
     { name: "Struktur", frage: "Dieselben Feldbezeichnungen?",
-      gleich: e.a.struktur === e.b.struktur,
+      gleich: (e.tabellen ?? []).every(tb => tb.ta?.struktur === tb.tb?.struktur),
       folge: "Ein Feld heißt anders, fehlt oder ist neu — das betrifft jeden Datensatz. Alles Weitere ist Folge davon." },
     { name: "Anordnung", frage: "Dieselbe Aneinanderreihung?",
-      gleich: e.a.anordnung === e.b.anordnung,
+      gleich: (e.tabellen ?? []).every(tb => tb.ta?.struktur === tb.tb?.struktur)
+        && (e.tabellen ?? []).every(tb => (tb.ta?.zeilen ?? 0) === (tb.tb?.zeilen ?? 0)),
       folge: "Die Felder stehen in anderer Folge. Bei einem Schema mit fester Reihenfolge ist das ein Fehler, sonst nur ein Hinweis auf eine andere Erzeugung." },
     { name: "Satzfolge", frage: "Dieselbe Reihenfolge der Datensätze?",
-      gleich: e.a.satzfolge === e.b.satzfolge,
+      gleich: e.folgeGleich,
       folge: satzfolgeText(e) },
     { name: "Ausprägungen", frage: "Dieselben Werte?",
-      gleich: e.a.auspraegungen === e.b.auspraegungen,
+      gleich: (e.tabellen ?? []).every(tb => !tb.spalten.length && !tb.eimer.length),
       folge: "Einzelne Werte weichen ab — welche, steht unten." },
   ];
 
@@ -582,7 +661,10 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
         : mengeAnders
           ? `Das Ziel hat ${zahl(Math.abs(d))} Datensatz${Math.abs(d) === 1 ? "" : "e"}
              ${d < 0 ? "weniger" : "mehr"} als die Quelle (${zahl(e.a.datensaetze)} gegen ${zahl(e.b.datensaetze)}).`
-          : `${viele(e.spalten.length, "Feld", "Felder")} und ${viele(e.eimer.length, "Gruppe", "Gruppen")} weichen ab.`}</span>
+          : `${viele(e.spalten.length, "Feld weicht", "Felder weichen")} ab` +
+            ((e.tabellen ?? []).filter(tb => tb.spalten.length || tb.eimer.length).length > 1
+              ? ` in ${viele((e.tabellen ?? []).filter(tb => tb.spalten.length || tb.eimer.length).length, "Tabelle", "Tabellen")}.`
+              : ".")}</span>
     </span></div>`);
 
   if (mengeAnders && e.spalten.length) {
@@ -599,27 +681,60 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
     ${seite("Ziel", e.dateiB, e.b)}
   </div></div>`);
 
+  // Tabellenübersicht — die Zerlegung sichtbar machen.
+  if ((e.tabellen ?? []).length > 1) {
+    t.push(`<h2>Tabellen</h2>
+      <div class="hinweis" style="margin-bottom:.5rem">
+        Jede Wiederholgruppe ist eine eigene Tabelle mit eigenem Schlüssel und
+        eigenem Abdruck — sonst gingen die Einträge einer Gruppe in einem Topf auf.
+      </div>
+      <div class="rahmen" style="margin-bottom:1rem"><table><thead><tr>
+        <th>Tabelle</th><th class="zahl">Zeilen Quelle</th><th class="zahl">Zeilen Ziel</th>
+        <th class="zahl">Felder</th><th></th>
+      </tr></thead><tbody>`);
+    for (const tb of e.tabellen) {
+      const gleich = !tb.spalten.length && !tb.eimer.length && tb.zeilenGleich;
+      const einzug = "&nbsp;".repeat(4 * (tb.ta?.tiefe ?? tb.tb?.tiefe ?? 0));
+      t.push(`<tr>
+        <td class="pfad">${einzug}${tb.name === "" ? "<b>Datensatz</b>" : escape(tb.name)}</td>
+        <td class="zahl">${zahl(tb.ta?.zeilen ?? 0)}</td>
+        <td class="zahl">${zahl(tb.tb?.zeilen ?? 0)}</td>
+        <td class="zahl">${zahl((tb.ta?.spalten ?? tb.tb?.spalten ?? []).length)}</td>
+        <td><span class="marke ${gleich ? "gut" : "schlecht"}">${
+          tb.fehltIn ? "fehlt in der " + tb.fehltIn
+          : gleich ? "gleich"
+          : !tb.zeilenGleich ? "andere Zeilenzahl"
+          : viele(tb.spalten.length, "Feld weicht ab", "Felder weichen ab")}</span></td>
+      </tr>`);
+    }
+    t.push(`</tbody></table></div>`);
+  }
+
   // Spaltenachse
   t.push(`<h2>Welches Feld?</h2>`);
-  if (!e.spalten.length) {
+  // Alle abweichenden Felder, aus jeder Tabelle.
+  const alleFelder = e.spalten;
+
+  if (!alleFelder.length) {
+    const gesamtfelder = (e.tabellen ?? []).reduce((n, tb) => n + (tb.ta?.spalten?.length ?? 0), 0);
     t.push(`<div class="karte"><span class="marke gut">gleich</span>
-      Alle ${zahl(e.a.spalten.length)} Felder stimmen überein.</div>`);
+      Alle ${zahl(gesamtfelder)} Felder stimmen überein.</div>`);
   } else {
     t.push(`<div class="rahmen"><table><thead><tr>
       <th>Feld</th><th class="zahl">Quelle</th><th class="zahl">Ziel</th><th></th>
     </tr></thead><tbody>`);
-    for (const s of e.spalten.slice(0, 200)) {
+    for (const s of alleFelder.slice(0, 200)) {
       const marke = s.art === "nur-quelle" ? '<span class="marke warnung">fehlt im Ziel</span>'
         : s.art === "nur-ziel" ? '<span class="marke warnung">nur im Ziel</span>'
         : '<span class="marke schlecht">Werte abweichend</span>';
       t.push(`<tr>
-        <td class="pfad">${escape(s.pfad)}</td>
+        <td class="pfad">${s.tabelle ? `<span class="hinweis">${escape(s.tabelle)} ▸ </span>` : ""}${escape(s.pfad)}</td>
         <td class="zahl">${s.a ? zahl(s.a[3]) : "–"}</td>
         <td class="zahl">${s.b ? zahl(s.b[3]) : "–"}</td>
         <td>${marke}</td></tr>`);
     }
-    if (e.spalten.length > 200) {
-      t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(e.spalten.length - 200)} weitere</td></tr>`);
+    if (alleFelder.length > 200) {
+      t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(alleFelder.length - 200)} weitere</td></tr>`);
     }
     t.push(`</tbody></table></div>`);
   }
@@ -809,8 +924,9 @@ function seite(titel, angaben, abdruck) {
     <div style="font-weight:600;word-break:break-all">${escape(angaben?.name ?? titel)}</div>
     <table style="margin-top:.5rem">
       <tr><td>Datensätze</td><td class="zahl">${zahl(abdruck.datensaetze)}</td></tr>
-      <tr><td>Felder mit Wert</td><td class="zahl">${zahl(abdruck.blaetter)}</td></tr>
-      <tr><td>verschiedene Feldpfade</td><td class="zahl">${zahl(abdruck.spalten.length)}</td></tr>
+      <tr><td>Felder mit Wert</td><td class="zahl">${zahl(
+        (abdruck.tabellen ?? []).reduce((n, x) => n + (x.felder ?? 0), 0))}</td></tr>
+      <tr><td>Tabellen</td><td class="zahl">${zahl((abdruck.tabellen ?? []).length)}</td></tr>
       <tr><td>Umfang</td><td class="zahl">${angaben?.groesse == null ? "–" : groesse(angaben.groesse)}</td></tr>
     </table></div>`;
 }

@@ -16,6 +16,38 @@ beantwortet zwei Fragen über die volle Menge, nicht stichprobenartig:
 * **Welches Feld** hat sich geändert?
 * **Welcher Datensatz** ist betroffen?
 
+## Verschachtelung als Tabellen
+
+XML hat mehrstufige Tiefen. Eine flache Feldliste verliert dabei etwas
+Wesentliches: Alle sechs `INVESTMENTIDENTIFIER` eines Investments landeten in
+demselben Feldpfad, ihre Werte in derselben Summe. Werden ISIN und interne
+Nummer vertauscht, ändert sich nichts — der Abgleich ist dort blind.
+
+Deshalb wird jede Wiederholgruppe eine **eigene Tabelle**, rekursiv, mit
+Fremdschlüssel auf die übergeordnete Zeile:
+
+```
+Stufe 0  (Datensatz VERTRAG)                     1 Zeile,  2 Spalten
+Stufe 1  POSITIONEN/POSITION                     2 Zeilen, 2 Spalten  ← gehört zum Datensatz
+Stufe 2  …/STAFFELN/STAFFEL                      3 Zeilen, 2 Spalten  ← gehört zu POSITION
+Stufe 3  …/TERMINE/TERMIN                        4 Zeilen, 1 Spalte   ← gehört zu STAFFEL
+```
+
+Auf jede Tabelle wird dasselbe Verfahren angewandt — Spaltenrand, Zeilenrand,
+Abdruck. Genau so, wie ein Ladeprogramm die Nachricht in Kopf- und
+Positionstabellen zerlegt. Gemessen an echten Daten: Ohne Untertabellen ist
+ein Tausch innerhalb einer Gruppe **unsichtbar**, mit ihnen wird er **erkannt**
+und im Klartext benannt.
+
+Der Zeilenschlüssel einer Gruppe ist Fremdschlüssel plus laufende Nummer
+(`2015-01-01#0`). Damit zählt auch die Reihenfolge innerhalb der Gruppe.
+
+**Ein Fallstrick dabei:** Das Schlüsselfeld eines Datensatzes kann *nach* der
+Wiederholgruppe stehen. Würde die Gruppenzeile beim Öffnen zugeordnet, bekäme
+sie einen leeren Fremdschlüssel — alle Zeilen aller Datensätze lägen unter
+demselben Platzhalter, und die Zugehörigkeit wäre verloren, ohne dass es
+auffiele. Die Zeilen warten deshalb, bis die Elternzeile schließt.
+
 ## Vier Ebenen
 
 Ein Vergleich, der nur „Feld X weicht ab" sagt, verschweigt das Entscheidende:

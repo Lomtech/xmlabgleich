@@ -97,6 +97,40 @@ impl Erkundung {
             .map(|(p, v)| (p.clone(), v.anzahl))
     }
 
+    /// Elemente innerhalb des Datensatzes, die mehrfach nebeneinander
+    /// stehen — Wiederholgruppen. Jede davon wird eine eigene Tabelle.
+    ///
+    /// Ohne diese Trennung landen alle Einträge einer Gruppe im selben
+    /// Feldpfad, und ein Tausch zwischen ihnen bleibt unsichtbar.
+    /// Zurückgegeben wird der Pfad relativ zum Datensatz, samt Vorkommen und
+    /// größter Gruppengröße.
+    ///
+    /// Nur Gruppen mit eigenen Feldern werden vorgeschlagen. Ein wiederholtes
+    /// **Blatt** — etwa mehrere `<TELEFON>` nebeneinander — bleibt eine
+    /// Spalte; seine Werte gehen weiter in dieselbe Summe ein, und ein Tausch
+    /// untereinander fällt dort nicht auf.
+    pub fn untertabellen_vorschlaege(&self, datensatz: &[u8]) -> Vec<(Vec<u8>, u64, u64)> {
+        let mut praefix = datensatz.to_vec();
+        praefix.push(b'/');
+
+        let mut treffer: Vec<(Vec<u8>, u64, u64)> = self
+            .pfade
+            .iter()
+            .filter(|(p, v)| !v.blatt && v.geschwister > 1 && p.starts_with(&praefix))
+            .map(|(p, v)| (p[praefix.len()..].to_vec(), v.anzahl, v.geschwister))
+            .collect();
+        // Flache zuerst — die äußere Gruppe muss vor der inneren angelegt
+        // werden, sonst hängt die innere am falschen Elternteil.
+        treffer.sort_by(|a, b| {
+            a.0.iter()
+                .filter(|c| **c == b'/')
+                .count()
+                .cmp(&b.0.iter().filter(|c| **c == b'/').count())
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        treffer
+    }
+
     /// Felder, die als Schlüssel taugen: genau einmal je Datensatz und
     /// möglichst unterschiedliche Werte. Zurückgegeben wird der Pfad relativ
     /// zum Datensatz, die Zahl der Vorkommen und die der verschiedenen Werte.
@@ -286,6 +320,48 @@ mod tests {
             !namen.contains(&"OPT".to_string()),
             "OPT kommt nur in einem von zwei Datensätzen vor"
         );
+    }
+
+    #[test]
+    fn wiederholgruppen_werden_als_untertabellen_vorgeschlagen() {
+        let x = "<L><P><ID>1</ID>\
+            <KENNUNGEN><KENNUNG><A>x</A></KENNUNG><KENNUNG><A>y</A></KENNUNG></KENNUNGEN>\
+            <EINZELN><B>z</B></EINZELN></P>\
+            <P><ID>2</ID>\
+            <KENNUNGEN><KENNUNG><A>q</A></KENNUNG></KENNUNGEN>\
+            <EINZELN><B>w</B></EINZELN></P></L>";
+        let v = erkunde(x).untertabellen_vorschlaege(b"L/P");
+        let namen: Vec<String> = v
+            .iter()
+            .map(|k| String::from_utf8_lossy(&k.0).to_string())
+            .collect();
+        assert!(
+            namen.contains(&"KENNUNGEN/KENNUNG".to_string()),
+            "die Wiederholgruppe fehlt: {namen:?}"
+        );
+        assert!(
+            !namen.contains(&"EINZELN".to_string()),
+            "was nur einmal vorkommt, ist keine Gruppe: {namen:?}"
+        );
+    }
+
+    /// Die äußere Gruppe muss vor der inneren stehen, sonst wird die innere
+    /// am falschen Elternteil angelegt.
+    #[test]
+    fn aeussere_gruppen_kommen_zuerst() {
+        let x = "<L><P><ID>1</ID><AS>\
+            <A><BS><B><X>1</X></B><B><X>2</X></B></BS></A>\
+            <A><BS><B><X>3</X></B></BS></A>\
+            </AS></P></L>";
+        let v = erkunde(x).untertabellen_vorschlaege(b"L/P");
+        let namen: Vec<String> = v
+            .iter()
+            .map(|k| String::from_utf8_lossy(&k.0).to_string())
+            .collect();
+        let i_a = namen.iter().position(|n| n == "AS/A");
+        let i_b = namen.iter().position(|n| n == "AS/A/BS/B");
+        assert!(i_a.is_some() && i_b.is_some(), "{namen:?}");
+        assert!(i_a < i_b, "die äußere Gruppe muss zuerst kommen: {namen:?}");
     }
 
     #[test]

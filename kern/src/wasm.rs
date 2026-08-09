@@ -35,6 +35,8 @@ static mut SUCH_SCHLUESSEL: Vec<String> = Vec::new();
 static mut SUCH_EIMER_GESAMT: u32 = 4096;
 static mut SUCH_EIMER: Vec<usize> = Vec::new();
 static mut SUCH_PFADE: Vec<Vec<u8>> = Vec::new();
+/// Aus welcher Tabelle die Einzelheiten stammen sollen.
+static mut SUCH_TABELLE: Option<Vec<u8>> = None;
 
 #[no_mangle]
 pub extern "C" fn puffer_ptr() -> *mut u8 {
@@ -155,8 +157,28 @@ pub extern "C" fn erkundung_fertig() {
                 j.push('}');
             }
             j.push(']');
+
+            // Wiederholgruppen — jede wird eine eigene Tabelle.
+            j.push_str(",\"untertabellen\":[");
+            for (i, (pfad, anzahl, gruppe)) in
+                e.untertabellen_vorschlaege(&pfad).iter().take(50).enumerate()
+            {
+                if i > 0 {
+                    j.push(',');
+                }
+                j.push_str("{\"pfad\":");
+                json_text(pfad, &mut j);
+                j.push_str(",\"anzahl\":");
+                j.push_str(&anzahl.to_string());
+                j.push_str(",\"groesste\":");
+                j.push_str(&gruppe.to_string());
+                j.push('}');
+            }
+            j.push(']');
         }
-        None => j.push_str(",\"datensatz\":null,\"datensaetze\":0,\"schluesselKandidaten\":[]"),
+        None => j.push_str(
+            ",\"datensatz\":null,\"datensaetze\":0,\"schluesselKandidaten\":[],\"untertabellen\":[]",
+        ),
     }
 
     // Die Pfade, absteigend nach Häufigkeit — als Überblick über den Aufbau.
@@ -380,6 +402,17 @@ pub extern "C" fn einzelheiten_vorbereiten(konfig_len: u32, eimer: u32) {
         SUCH_EIMER_GESAMT = eimer.max(1);
         SUCH_EIMER = Vec::new();
         SUCH_PFADE = Vec::new();
+        SUCH_TABELLE = None;
+    }
+}
+
+/// Legt fest, aus welcher Tabelle die Einzelheiten geholt werden. Ohne Aufruf
+/// werden alle Tabellen durchsucht.
+#[no_mangle]
+pub extern "C" fn einzelheiten_tabelle(len: u32) {
+    let t = puffer(len).to_vec();
+    unsafe {
+        SUCH_TABELLE = Some(t);
     }
 }
 
@@ -412,13 +445,17 @@ pub extern "C" fn einzelheiten_start() {
             .map(|p| p.as_slice())
             .collect();
 
+        let unter: Vec<&str> = (&*(&raw const ZER_UNTER)).iter().map(|s| s.as_str()).collect();
+        let tabelle = (&*(&raw const SUCH_TABELLE)).clone();
         SCANNER = Some(Scanner::neu());
         EINZELHEITEN = Some(Einzelheiten::neu(
             &datensatz,
             &schluessel,
             SUCH_EIMER_GESAMT as usize,
+            &unter,
             &eimer,
             &pfade,
+            tabelle.as_deref(),
         ));
     }
 }
@@ -468,8 +505,165 @@ pub extern "C" fn einzelheiten_fertig() {
         j.push(',');
         json_text(&f.wert, &mut j);
         j.push(',');
-        j.push_str(&f.folge.to_string());
+        json_text(&f.tabelle, &mut j);
         j.push(']');
+    }
+    j.push_str("]}");
+    schreibe(&j);
+}
+
+// -------------------------------------------------------------- Zerlegung
+//
+// Wie `abdruck_*`, aber mit Untertabellen: Jede Wiederholgruppe bekommt eine
+// eigene Tabelle mit eigenem Rand. Die Gruppen werden vor dem Start einzeln
+// angemeldet, weil sie aus der Erkundung kommen und ihre Zahl nicht feststeht.
+
+static mut ZERLEGUNG: Option<crate::zerlegung::Zerlegung> = None;
+static mut ZER_UNTER: Vec<String> = Vec::new();
+
+#[no_mangle]
+pub extern "C" fn zerlegung_vorbereiten(konfig_len: u32, eimer: u32) {
+    einzelheiten_vorbereiten(konfig_len, eimer);
+    unsafe {
+        ZER_UNTER = Vec::new();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn zerlegung_untertabelle(len: u32) {
+    let p = String::from_utf8_lossy(puffer(len)).to_string();
+    unsafe {
+        (&mut *(&raw mut ZER_UNTER)).push(p);
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn zerlegung_start() {
+    unsafe {
+        let datensatz = (&*(&raw const SUCH_DATENSATZ)).clone();
+        let schluessel: Vec<&str> = (&*(&raw const SUCH_SCHLUESSEL))
+            .iter()
+            .map(|s| s.as_str())
+            .collect();
+        let unter: Vec<&str> = (&*(&raw const ZER_UNTER)).iter().map(|s| s.as_str()).collect();
+        SCANNER = Some(Scanner::neu());
+        ZERLEGUNG = Some(crate::zerlegung::Zerlegung::neu(
+            &datensatz,
+            &schluessel,
+            SUCH_EIMER_GESAMT as usize,
+            &unter,
+        ));
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn zerlegung_block(len: u32) {
+    let daten = puffer(len);
+    unsafe {
+        if let (Some(s), Some(z)) = (
+            (&mut *(&raw mut SCANNER)).as_mut(),
+            (&mut *(&raw mut ZERLEGUNG)).as_mut(),
+        ) {
+            s.block(daten, z);
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn zerlegung_fertig() {
+    let (s, z) = unsafe {
+        (
+            (&mut *(&raw mut SCANNER)).as_mut(),
+            (&mut *(&raw mut ZERLEGUNG)).as_mut(),
+        )
+    };
+    let (s, z) = match (s, z) {
+        (Some(s), Some(z)) => (s, z),
+        _ => {
+            schreibe("{\"fehler\":\"nicht begonnen\"}");
+            return;
+        }
+    };
+    s.abschliessen(z);
+
+    let mut j = String::with_capacity(256 * 1024);
+    j.push_str("{\"verfahren\":\"xmlabgleich/2\",\"gesamt\":\"");
+    let hex = format!("{:016x}", z.gesamt()).to_uppercase();
+    for (i, teil) in hex.as_bytes().chunks(4).enumerate() {
+        if i > 0 {
+            j.push('-');
+        }
+        j.push_str(std::str::from_utf8(teil).unwrap_or(""));
+    }
+    j.push_str("\",\"datensaetze\":");
+    j.push_str(&z.datensaetze.to_string());
+    j.push_str(",\"ohneSchluessel\":");
+    j.push_str(&z.ohne_schluessel.to_string());
+
+    j.push_str(",\"ersteSchluessel\":[");
+    for (i, s) in z.erste_schluessel.iter().take(5000).enumerate() {
+        if i > 0 {
+            j.push(',');
+        }
+        json_text(s, &mut j);
+    }
+    j.push(']');
+
+    // Je Tabelle: Ränder, Struktur, Zählwerte.
+    let mut namen: Vec<&Vec<u8>> = z.tabellen.keys().collect();
+    namen.sort();
+    j.push_str(",\"tabellen\":[");
+    for (i, name) in namen.iter().enumerate() {
+        if i > 0 {
+            j.push(',');
+        }
+        let t = &z.tabellen[*name];
+        j.push_str("{\"name\":");
+        json_text(name, &mut j);
+        j.push_str(",\"gehoertZu\":");
+        json_text(&t.gehoert_zu, &mut j);
+        j.push_str(",\"tiefe\":");
+        j.push_str(&t.tiefe.to_string());
+        j.push_str(",\"zeilen\":");
+        j.push_str(&t.zeilenzahl.to_string());
+        j.push_str(",\"felder\":");
+        j.push_str(&t.felder.to_string());
+        j.push_str(",\"struktur\":");
+        j.push_str(&t.struktur().to_string());
+        j.push_str(",\"wert\":");
+        j.push_str(&t.wert().to_string());
+
+        let mut spalten: Vec<_> = t.spalten.iter().collect();
+        spalten.sort_by(|a, b| a.0.cmp(b.0));
+        j.push_str(",\"spalten\":[");
+        for (k, (pfad, w)) in spalten.iter().enumerate() {
+            if k > 0 {
+                j.push(',');
+            }
+            j.push('[');
+            json_text(pfad, &mut j);
+            j.push(',');
+            j.push_str(&w.summe.to_string());
+            j.push(',');
+            j.push_str(&w.xor.to_string());
+            j.push(',');
+            j.push_str(&w.anzahl.to_string());
+            j.push(']');
+        }
+        j.push_str("],\"eimer\":[");
+        for (k, e) in t.zeilen.iter().enumerate() {
+            if k > 0 {
+                j.push(',');
+            }
+            j.push('[');
+            j.push_str(&e.summe.to_string());
+            j.push(',');
+            j.push_str(&e.xor.to_string());
+            j.push(',');
+            j.push_str(&e.anzahl.to_string());
+            j.push(']');
+        }
+        j.push_str("]}");
     }
     j.push_str("]}");
     schreibe(&j);

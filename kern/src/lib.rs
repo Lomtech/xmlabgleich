@@ -8,6 +8,9 @@ pub mod abdruck;
 pub mod einzelheiten;
 pub mod erkundung;
 pub mod scanner;
+pub mod tabellen;
+pub mod zerlegung;
+mod zerlegung_pruefung;
 pub mod wasm;
 
 mod abdruck_pruefung;
