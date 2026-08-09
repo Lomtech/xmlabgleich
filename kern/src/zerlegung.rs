@@ -44,7 +44,13 @@ pub struct Zerlegung {
     pub erste_schluessel: Vec<Vec<u8>>,
 }
 
-const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 5000;
+/// So viele Schlüssel werden im Klartext gemerkt.
+///
+/// Nicht nur für die Satzfolge, sondern auch um zu sagen, *welche* Datensätze
+/// fehlen — die nützlichste Auskunft, wenn zwei Bestände verschieden groß
+/// sind. Bei 50.000 Schlüsseln zu 20 Zeichen sind das rund 1 MB; darüber
+/// hinaus sagt der Bericht, dass die Liste unvollständig ist.
+const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 50_000;
 const ANORDNUNGEN_HOECHSTENS: usize = 1000;
 
 impl Zerlegung {

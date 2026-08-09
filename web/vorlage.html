@@ -80,6 +80,9 @@ button.mini {
   border: 1px solid var(--rand); background: transparent; color: var(--gedaempft);
 }
 button.mini:hover { color: var(--text); border-color: var(--betont) }
+th.sortierbar { cursor: pointer; user-select: none }
+th.sortierbar:hover { color: var(--betont) }
+.datentabelle { margin-bottom: 1rem }
 .loading::after { content: " …"; animation: punkte 1.2s infinite }
 @keyframes punkte { 0%,100% { opacity: .4 } 50% { opacity: 1 } }
 </style>
@@ -443,27 +446,19 @@ async function zeigeEinzelheiten(w, e, konfig) {
         : `der ${zahl(gruppen)} betroffenen Gruppen`}
       statt der ganzen Datei.
       ${gekuerzt ? "<b>Die Liste ist gekürzt.</b>" : ""}
-    </div>
-    <div class="rahmen"><table><thead><tr>
-      <th>Schlüssel</th><th>Feld</th><th>Quelle</th><th>Ziel</th>
-    </tr></thead><tbody>`];
+    </div>`,
+    datensatzUebersicht(unterschiede),
+    datenTabelle("t-werte", [
+      { kopf: "Schlüssel", wert: z => z.schluessel, klasse: "pfad" },
+      { kopf: "Tabelle", wert: z => z.tabelle || "(Datensatz)" },
+      { kopf: "Feld", wert: z => z.pfad, klasse: "pfad" },
+      { kopf: "Quelle", csv: z => z.a ?? "", roh: true, wert: z => hervorheben(z.a, z.b) },
+      { kopf: "Ziel", csv: z => z.b ?? "", roh: true, wert: z => hervorheben(z.b, z.a) },
+    ], unterschiede, "abweichende_werte.csv")];
 
-  for (const z of unterschiede.slice(0, 200)) {
-    t.push(`<tr>
-      <td class="pfad">${escape(z.schluessel)}</td>
-      <td class="pfad" style="font-size:.8em;opacity:.75">${
-        z.tabelle ? `<span class="hinweis">${escape(kurzerPfad(z.tabelle))} ▸ </span>` : ""
-      }${escape(kurzerPfad(z.pfad))}</td>
-      <td>${hervorheben(z.a, z.b)}</td>
-      <td>${hervorheben(z.b, z.a)}</td>
-    </tr>`);
-  }
-  if (unterschiede.length > 200) {
-    t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(unterschiede.length - 200)} weitere</td></tr>`);
-  }
-  t.push(`</tbody></table></div>`);
   ziel.innerHTML = t.join("");
-  return { unterschiede: unterschiede.slice(0, 200), gruppen, gekuerzt };
+  tabellenZeichnen();
+  return { unterschiede, gruppen, gekuerzt };
 }
 
 /** Zeichnet einen gemerkten Klartext-Nachlauf ohne erneutes Lesen. */
@@ -474,24 +469,90 @@ function zeigeGemerkteEinzelheiten(gemerkt, ziel) {
       ${viele(gemerkt.unterschiede.length, "Stelle unterscheidet", "Stellen unterscheiden")} sich —
       ${gemerkt.gruppen === 1 ? "aus der einen betroffenen Gruppe" : `aus ${zahl(gemerkt.gruppen)} betroffenen Gruppen`}.
       ${gemerkt.gekuerzt ? "<b>Die Liste ist gekürzt.</b>" : ""}
-    </div>
-    <div class="rahmen"><table><thead><tr>
-      <th>Schlüssel</th><th>Feld</th><th>Quelle</th><th>Ziel</th>
-    </tr></thead><tbody>`];
-  for (const z of gemerkt.unterschiede) {
-    t.push(`<tr>
-      <td class="pfad">${escape(z.schluessel)}</td>
-      <td class="pfad" style="font-size:.8em;opacity:.75">${
-        z.tabelle ? `<span class="hinweis">${escape(kurzerPfad(z.tabelle))} ▸ </span>` : ""
-      }${escape(kurzerPfad(z.pfad))}</td>
-      <td>${hervorheben(z.a, z.b)}</td>
-      <td>${hervorheben(z.b, z.a)}</td>
-    </tr>`);
-  }
-  t.push(`</tbody></table></div>`);
+    </div>`,
+    datensatzUebersicht(gemerkt.unterschiede),
+    datenTabelle("t-werte-gemerkt", [
+      { kopf: "Schlüssel", wert: z => z.schluessel, klasse: "pfad" },
+      { kopf: "Tabelle", wert: z => z.tabelle || "(Datensatz)" },
+      { kopf: "Feld", wert: z => z.pfad, klasse: "pfad" },
+      { kopf: "Quelle", csv: z => z.a ?? "", roh: true, wert: z => hervorheben(z.a, z.b) },
+      { kopf: "Ziel", csv: z => z.b ?? "", roh: true, wert: z => hervorheben(z.b, z.a) },
+    ], gemerkt.unterschiede, "abweichende_werte.csv")];
   const kasten = document.createElement("div");
   kasten.innerHTML = t.join("");
   ziel.append(kasten);
+  tabellenZeichnen();
+}
+
+/**
+ * Benennt die Datensätze, die auf einer Seite fehlen.
+ *
+ * Bei ungleicher Menge ist das die einzige Auskunft, die zählt: Wenn neun von
+ * zehn Datensätzen fehlen, weicht zwangsläufig jedes Feld ab — diese Liste
+ * abzuarbeiten führt nirgendwohin. Welche Sätze es sind, führt weiter.
+ */
+function fehlendeDatensaetze(e) {
+  const a = e.a.ersteSchluessel ?? [], b = e.b.ersteSchluessel ?? [];
+  const inA = new Set(a), inB = new Set(b);
+  const nurQuelle = a.filter(k => !inB.has(k));
+  const nurZiel = b.filter(k => !inA.has(k));
+  const d = e.b.datensaetze - e.a.datensaetze;
+  // Die Klartextliste ist gedeckelt; ist sie voll, kann sie unvollständig sein.
+  const unvollstaendig = a.length >= 50000 || b.length >= 50000;
+
+  const zeilen = [
+    ...nurQuelle.map(k => ({ schluessel: k, wo: "fehlt im Ziel" })),
+    ...nurZiel.map(k => ({ schluessel: k, wo: "nur im Ziel" })),
+  ];
+
+  return `<div class="karte" style="border-color:var(--schlecht)">
+      <b>${zahl(e.a.datensaetze)} Datensätze in der Quelle, ${zahl(e.b.datensaetze)} im Ziel.</b>
+      <div class="hinweis" style="margin-top:.4rem">
+        Damit weicht zwangsläufig fast jedes Feld ab: Die Werte fehlender Datensätze
+        fehlen mit. Die Feldliste weiter unten sagt hier wenig — was zählt, ist
+        welche Datensätze es sind.
+        ${unvollstaendig ? "<b>Die Schlüsselliste ist gedeckelt; es können mehr sein.</b>" : ""}
+      </div>
+    </div>` +
+    (zeilen.length
+      ? datenTabelle("t-fehlend", [
+          { kopf: "Datensatz", wert: z => z.schluessel, klasse: "pfad" },
+          { kopf: "", wert: z => z.wo },
+        ], zeilen, "fehlende_datensaetze.csv")
+      : `<div class="karte hinweis">Die Schlüssel selbst ließen sich nicht
+         gegenüberstellen — vermutlich ist das gewählte Schlüsselfeld nicht eindeutig.</div>`);
+}
+
+/**
+ * Fasst zusammen, welche Datensätze betroffen sind.
+ *
+ * Der Schlüssel einer Untertabellenzeile trägt den Fremdschlüssel und eine
+ * laufende Nummer (`A1#2`). Für diese Übersicht zählt nur der Datensatz
+ * davor — sonst stünde derselbe Beleg dreimal da, weil drei seiner
+ * Positionen abweichen.
+ */
+function datensatzUebersicht(unterschiede) {
+  const je = new Map();
+  for (const u of unterschiede) {
+    const satz = String(u.schluessel).split("#")[0];
+    je.set(satz, (je.get(satz) ?? 0) + 1);
+  }
+  if (je.size === 0) return "";
+  const zeilen = [...je.entries()].map(([satz, n]) => ({ satz, n }))
+    .sort((a, b) => b.n - a.n);
+
+  return `<div class="karte" style="margin-bottom:.75rem">
+      <b>${viele(zeilen.length, "Datensatz ist", "Datensätze sind")} betroffen.</b>
+      ${zeilen.length <= 12
+        ? " " + zeilen.map(z => `<code>${escape(z.satz)}</code>`).join(", ")
+        : ""}
+    </div>` +
+    (zeilen.length > 12
+      ? datenTabelle("t-saetze", [
+          { kopf: "Datensatz", wert: z => z.satz, klasse: "pfad" },
+          { kopf: "abweichende Stellen", wert: z => z.n, zahl: true, klasse: "zahl" },
+        ], zeilen, "betroffene_datensaetze.csv")
+      : "");
 }
 
 /** Letztes Pfadstück, der Rest gekürzt — die vollen Pfade sind sehr lang. */
@@ -605,6 +666,145 @@ function vergleiche(a, b) {
   };
 }
 
+
+/* ─────────────────────────────────── Tabellen mit Filter, Sortierung, Ausgabe
+ *
+ * Alle Abweichungslisten laufen über diese eine Stelle. Sie zeigt die Zeilen
+ * vollständig — abgeschnittene Listen sind bei einem Prüfbericht das
+ * Gegenteil dessen, wozu er da ist —, lässt filtern, sortieren und als CSV
+ * ausgeben.
+ *
+ * Gerendert wird stückweise nachgeladen: Zehntausende Zeilen auf einmal in
+ * den Baum zu hängen legt die Seite lahm, während die ersten hundert schon
+ * die Frage beantworten.
+ */
+const SEITE = 300;
+const tabellenZustand = new Map();
+
+function datenTabelle(id, spalten, zeilen, dateiname) {
+  tabellenZustand.set(id, {
+    spalten, zeilen, dateiname,
+    filter: "", sortiert: null, absteigend: false, sichtbar: SEITE,
+  });
+  return `<div class="datentabelle" id="${id}"></div>`;
+}
+
+function sichtbareZeilen(z) {
+  let zeilen = z.zeilen;
+  if (z.filter) {
+    const suche = z.filter.toLowerCase();
+    zeilen = zeilen.filter(r =>
+      z.spalten.some(s => String(s.wert(r) ?? "").toLowerCase().includes(suche)));
+  }
+  if (z.sortiert !== null) {
+    const s = z.spalten[z.sortiert];
+    zeilen = [...zeilen].sort((a, b) => {
+      const x = s.wert(a), y = s.wert(b);
+      // Zahlen als Zahlen vergleichen, sonst stünde 10 vor 9.
+      const zx = typeof x === "number" ? x : Number(String(x).replace(/[^\d.-]/g, ""));
+      const zy = typeof y === "number" ? y : Number(String(y).replace(/[^\d.-]/g, ""));
+      const cmp = (s.zahl && !isNaN(zx) && !isNaN(zy))
+        ? zx - zy
+        : String(x).localeCompare(String(y), "de");
+      return z.absteigend ? -cmp : cmp;
+    });
+  }
+  return zeilen;
+}
+
+function zeichneTabelle(id) {
+  const z = tabellenZustand.get(id);
+  const behaelter = $(id);
+  if (!z || !behaelter) return;
+
+  const gefiltert = sichtbareZeilen(z);
+  const zeigen = gefiltert.slice(0, z.sichtbar);
+
+  const kopf = z.spalten.map((s, i) => {
+    const pfeil = z.sortiert === i ? (z.absteigend ? " ↓" : " ↑") : "";
+    return `<th class="${s.zahl ? "zahl " : ""}sortierbar" data-sort="${i}">${escape(s.kopf)}${pfeil}</th>`;
+  }).join("");
+
+  const koerper = zeigen.map(r =>
+    "<tr>" + z.spalten.map(s =>
+      `<td class="${s.klasse ?? ""}">${s.roh ? s.wert(r) : escape(String(s.wert(r) ?? ""))}</td>`
+    ).join("") + "</tr>").join("");
+
+  behaelter.innerHTML = `
+    <div class="reihe" style="margin-bottom:.5rem">
+      <input type="text" class="filter" placeholder="filtern …" value="${escape(z.filter)}"
+             style="max-width:320px" autocomplete="off">
+      <span class="hinweis">${
+        z.filter
+          ? `${zahl(gefiltert.length)} von ${zahl(z.zeilen.length)}`
+          : viele(z.zeilen.length, "Zeile", "Zeilen")
+      }${zeigen.length < gefiltert.length ? ` — ${zahl(zeigen.length)} angezeigt` : ""}</span>
+      <div style="flex:1"></div>
+      <button type="button" class="mini alsCsv">als CSV</button>
+    </div>
+    <div class="rahmen"><table><thead><tr>${kopf}</tr></thead><tbody>${koerper}</tbody></table></div>
+    ${zeigen.length < gefiltert.length
+      ? `<div style="text-align:center;margin-top:.5rem">
+           <button type="button" class="mini mehr">weitere ${zahl(Math.min(SEITE, gefiltert.length - zeigen.length))} anzeigen</button>
+         </div>` : ""}`;
+
+  behaelter.querySelector(".filter").addEventListener("input", ev => {
+    z.filter = ev.target.value;
+    z.sichtbar = SEITE;
+    zeichneTabelle(id);
+    // Der Fokus geht beim Neuzeichnen verloren; ohne das hier tippt man
+    // nach dem ersten Zeichen ins Leere.
+    const f = behaelter.querySelector(".filter");
+    f.focus();
+    f.setSelectionRange(f.value.length, f.value.length);
+  });
+  behaelter.querySelectorAll("[data-sort]").forEach(th =>
+    th.addEventListener("click", () => {
+      const i = Number(th.dataset.sort);
+      if (z.sortiert === i) z.absteigend = !z.absteigend;
+      else { z.sortiert = i; z.absteigend = false }
+      zeichneTabelle(id);
+    }));
+  behaelter.querySelector(".mehr")?.addEventListener("click", () => {
+    z.sichtbar += SEITE;
+    zeichneTabelle(id);
+  });
+  behaelter.querySelector(".alsCsv").addEventListener("click", () => alsCsv(id));
+}
+
+/**
+ * Gibt die Liste als CSV aus — vollständig, nicht nur das Angezeigte, aber
+ * gefiltert und sortiert wie auf dem Bildschirm.
+ *
+ * Semikolon als Trenner und eine Bytefolge am Anfang, weil deutsche
+ * Tabellenkalkulationen die Datei sonst als eine einzige Spalte öffnen.
+ */
+function alsCsv(id) {
+  const z = tabellenZustand.get(id);
+  if (!z) return;
+  const feld = (v) => {
+    const s = String(v ?? "");
+    return /[";\n\r]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
+  };
+  const zeilen = sichtbareZeilen(z);
+  const text = [
+    z.spalten.map(s => feld(s.kopf)).join(";"),
+    ...zeilen.map(r => z.spalten.map(s => feld(s.csv ? s.csv(r) : s.wert(r))).join(";")),
+  ].join("\r\n");
+
+  const blob = new Blob(["\ufeff" + text], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = z.dateiname;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+}
+
+/** Zeichnet alle Tabellen, die im Bericht angelegt wurden. */
+function tabellenZeichnen() {
+  for (const id of tabellenZustand.keys()) zeichneTabelle(id);
+}
+
 /* ─────────────────────────────────────────── Bericht */
 
 function zeigeBericht(e, datensatz, schluessel, ziel = null) {
@@ -692,27 +892,19 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
         : e.nurUmsortiert
           ? "Jeder Satz ist mit denselben Werten vorhanden, aber die Datensätze stehen in anderer Reihenfolge."
         : mengeAnders
-          ? `Das Ziel hat ${zahl(Math.abs(d))} Datensatz${Math.abs(d) === 1 ? "" : "e"}
-             ${d < 0 ? "weniger" : "mehr"} als die Quelle (${zahl(e.a.datensaetze)} gegen ${zahl(e.b.datensaetze)}).`
+          ? `${viele(Math.abs(d), "Datensatz", "Datensätze")} ${d < 0 ? "fehlen im Ziel" : "zusätzlich im Ziel"}.`
           : `${viele(e.spalten.length, "Feld weicht", "Felder weichen")} ab` +
             ((e.tabellen ?? []).filter(tb => tb.spalten.length || tb.eimer.length).length > 1
               ? ` in ${viele((e.tabellen ?? []).filter(tb => tb.spalten.length || tb.eimer.length).length, "Tabelle", "Tabellen")}.`
               : ".")}</span>
     </span></div>`);
 
-  if (mengeAnders && e.spalten.length) {
-    t.push(`<div class="karte hinweis">
-      Die ${zahl(e.spalten.length)} unten aufgeführten Felder sind
-      <b>Folge dieser Mengendifferenz</b>, nicht notwendigerweise eigene Fehler:
-      Mit einem fehlenden Datensatz fehlen alle Werte, die er trug.
-      Erst wenn die Datensatzzahl stimmt, sagt die Feldliste etwas über einzelne Werte aus.
-    </div>`);
+  // Ist die Menge verschieden, ist alles Weitere Folge davon. Dann gehört
+  // hierher, welche Datensätze fehlen — und nicht eine Liste von Feldern, die
+  // zwangsläufig abweichen, weil ihre Datensätze gar nicht da sind.
+  if (mengeAnders) {
+    t.push(fehlendeDatensaetze(e));
   }
-
-  t.push(`<div class="karte"><div class="paar">
-    ${seite("Quelle", e.dateiA, e.a)}
-    ${seite("Ziel", e.dateiB, e.b)}
-  </div></div>`);
 
   // Tabellenübersicht — die Zerlegung sichtbar machen.
   if ((e.tabellen ?? []).length > 1) {
@@ -752,56 +944,56 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
     const gesamtfelder = (e.tabellen ?? []).reduce((n, tb) => n + (tb.ta?.spalten?.length ?? 0), 0);
     t.push(`<div class="karte"><span class="marke gut">gleich</span>
       Alle ${zahl(gesamtfelder)} Felder stimmen überein.</div>`);
+  } else if (mengeAnders) {
+    // Zusammengeklappt: bei ungleicher Menge ist die Liste erwartbar lang und
+    // erwartbar wenig aussagekräftig. Wer sie trotzdem sehen will, klappt auf.
+    t.push(`<details class="karte">
+      <summary style="cursor:pointer">
+        ${viele(alleFelder.length, "Feld weicht", "Felder weichen")} ab —
+        <span class="hinweis">Folge der Mengendifferenz, zum Aufklappen</span>
+      </summary>
+      <div style="margin-top:.75rem">${datenTabelle("t-felder", [
+        { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
+        { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
+        { kopf: "Werte Quelle", wert: s => s.a ? s.a[3] : "", zahl: true, klasse: "zahl" },
+        { kopf: "Werte Ziel", wert: s => s.b ? s.b[3] : "", zahl: true, klasse: "zahl" },
+      ], alleFelder, "abweichende_felder.csv")}</div>
+    </details>`);
   } else {
-    t.push(`<div class="rahmen"><table><thead><tr>
-      <th>Feld</th><th class="zahl">Quelle</th><th class="zahl">Ziel</th><th></th>
-    </tr></thead><tbody>`);
-    for (const s of alleFelder.slice(0, 200)) {
-      const marke = s.art === "nur-quelle" ? '<span class="marke warnung">fehlt im Ziel</span>'
-        : s.art === "nur-ziel" ? '<span class="marke warnung">nur im Ziel</span>'
-        : '<span class="marke schlecht">Werte abweichend</span>';
-      t.push(`<tr>
-        <td class="pfad">${s.tabelle ? `<span class="hinweis">${escape(s.tabelle)} ▸ </span>` : ""}${escape(s.pfad)}</td>
-        <td class="zahl">${s.a ? zahl(s.a[3]) : "–"}</td>
-        <td class="zahl">${s.b ? zahl(s.b[3]) : "–"}</td>
-        <td>${marke}</td></tr>`);
-    }
-    if (alleFelder.length > 200) {
-      t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(alleFelder.length - 200)} weitere</td></tr>`);
-    }
-    t.push(`</tbody></table></div>`);
+    const art = s => s.art === "nur-quelle" ? "fehlt im Ziel"
+      : s.art === "nur-ziel" ? "nur im Ziel" : "Werte abweichend";
+    t.push(datenTabelle("t-felder", [
+      { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
+      { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
+      { kopf: "Werte Quelle", wert: s => s.a ? s.a[3] : "", zahl: true, klasse: "zahl" },
+      { kopf: "Werte Ziel", wert: s => s.b ? s.b[3] : "", zahl: true, klasse: "zahl" },
+      { kopf: "Befund", wert: art,
+        roh: true, csv: art,
+        // Die Marke braucht Auszeichnung; in der CSV steht nur der Text.
+        wert: s => `<span class="marke ${s.art === "abweichend" ? "schlecht" : "warnung"}">${escape(art(s))}</span>` },
+    ], alleFelder, "abweichende_felder.csv"));
   }
 
   // Zeilenachse
+  //
+  // Bewusst ohne Auflistung der Eimer: Ihre Nummern sind ein Rechenmittel
+  // dieses Werkzeugs — sie verkleinern den Suchraum — und beantworten die
+  // Frage nicht, die hier steht. Welcher Datensatz betroffen ist, sagen die
+  // Schlüssel im Abschnitt darunter.
   t.push(`<h2>Welcher Datensatz?</h2>`);
   if (!schluessel) {
     t.push(`<div class="karte hinweis">Ohne Schlüsselfeld lässt sich nicht sagen,
       welche Datensätze betroffen sind — nur welche Felder.</div>`);
   } else if (!e.eimer.length) {
     t.push(`<div class="karte"><span class="marke gut">gleich</span>
-      Alle ${zahl(EIMER)} Gruppen stimmen überein.</div>`);
+      Kein Datensatz weicht ab.</div>`);
   } else {
-    const stellen = e.eimer.length * e.spalten.length;
+    const proEimer = Math.max(1, Math.round(e.a.datensaetze / EIMER));
     t.push(`<div class="karte">
-      <b>${zahl(e.eimer.length)} von ${zahl(EIMER)} Gruppen ${e.eimer.length === 1 ? "weicht" : "weichen"} ab.</b>
-      Die Suche ist damit auf etwa ${viele(e.eimer.length * proEimer, "Datensatz", "Datensätze")}
-      eingegrenzt statt auf ${zahl(e.a.datensaetze)}.
-      ${e.spalten.length ? `Zusammen mit den abweichenden Feldern
-        ${stellen === 1 ? "bleibt <b>eine einzige mögliche Stelle</b>" : `bleiben ${zahl(stellen)} mögliche Stellen`}.` : ""}
+      <b>Die Suche ist auf etwa ${viele(e.eimer.length * proEimer, "Datensatz", "Datensätze")}
+      eingegrenzt</b> statt auf ${zahl(e.a.datensaetze)}.
+      Welche es genau sind, steht unten mit Schlüssel und Wert.
     </div>`);
-    t.push(`<div class="rahmen"><table><thead><tr>
-      <th>Gruppe</th><th class="zahl">Werte Quelle</th><th class="zahl">Werte Ziel</th><th class="zahl">Unterschied</th>
-    </tr></thead><tbody>`);
-    for (const g of e.eimer.slice(0, 50)) {
-      t.push(`<tr><td>${g.nr}</td>
-        <td class="zahl">${zahl(g.a[2])}</td>
-        <td class="zahl">${zahl(g.b[2])}</td>
-        <td class="zahl">${g.b[2] - g.a[2] > 0 ? "+" : ""}${zahl(g.b[2] - g.a[2])}</td></tr>`);
-    }
-    if (e.eimer.length > 50) {
-      t.push(`<tr><td colspan="4" class="hinweis">… und ${zahl(e.eimer.length - 50)} weitere</td></tr>`);
-    }
-    t.push(`</tbody></table></div>`);
   }
 
   t.push(`<h2>Nicht geprüft</h2><div class="karte"><ul class="grenzen">
@@ -817,6 +1009,7 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   </ul></div>`);
 
   (ziel ?? $("ergebnis")).innerHTML = t.join("");
+  tabellenZeichnen();
 }
 
 /**

@@ -36,9 +36,15 @@ struct WartendKlartext {
     kinder: Vec<WartendKlartext>,
 }
 
-/// So viele Funde werden höchstens gesammelt. Eine Abweichung, die
-/// Zehntausende Stellen betrifft, ist ohnehin keine Einzelfallfrage mehr.
-const FUNDE_HOECHSTENS: usize = 2000;
+/// So viele Funde werden höchstens gesammelt.
+///
+/// Großzügig bemessen, damit die Liste vollständig ist und sich als Ganzes
+/// ausgeben lässt — bei einer systematisch falsch geladenen Spalte sind
+/// Zehntausende Stellen betroffen, und gerade dann will man sie alle sehen.
+/// Die Obergrenze schützt nur davor, dass der Speicher des Browsers bei einer
+/// vollständig verschiedenen Datei überläuft; wird sie erreicht, sagt der
+/// Bericht es.
+const FUNDE_HOECHSTENS: usize = 200_000;
 
 pub struct Einzelheiten {
     datensatz: Vec<Vec<u8>>,
