@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta name="quelltext" content="b3d257b06a907517">
+<meta name="quelltext" content="7740e973c371bc55">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>xmlabgleich</title>
@@ -84,6 +84,20 @@ button.mini:hover { color: var(--text); border-color: var(--betont) }
 th.sortierbar { cursor: pointer; user-select: none }
 th.sortierbar:hover { color: var(--betont) }
 .datentabelle { margin-bottom: 1rem }
+.blaettern { display: flex; gap: .25rem; align-items: center }
+.blaettern button {
+  font-size: .9rem; padding: .2rem .5rem; border-radius: 5px; min-width: 2rem;
+  border: 1px solid var(--rand); background: transparent; color: var(--gedaempft);
+}
+.blaettern button:hover { color: var(--text); border-color: var(--betont) }
+.springen {
+  font: inherit; font-size: .8rem; padding: .2rem .4rem; border-radius: 5px;
+  border: 1px solid var(--rand); background: var(--feld); color: var(--text);
+}
+td.lfd, th.lfd {
+  color: var(--gedaempft); font-size: .78rem; text-align: right;
+  font-variant-numeric: tabular-nums; width: 1%; white-space: nowrap;
+}
 .loading::after { content: " …"; animation: punkte 1.2s infinite }
 @keyframes punkte { 0%,100% { opacity: .4 } 50% { opacity: 1 } }
 </style>
@@ -679,37 +693,46 @@ function vergleiche(a, b) {
  * den Baum zu hängen legt die Seite lahm, während die ersten hundert schon
  * die Frage beantworten.
  */
-const SEITE = 300;
+// Seitengröße wie im CSV-Betrachter: Es stehen immer nur so viele Zeilen im
+// Baum, unabhängig davon, wie lang die Liste ist. Blättern statt Nachladen
+// trägt Millionen Zeilen, weil der Browser nie mehr als eine Seite zeichnet.
+const SEITE = 50;
 const tabellenZustand = new Map();
 
 function datenTabelle(id, spalten, zeilen, dateiname) {
   tabellenZustand.set(id, {
     spalten, zeilen, dateiname,
-    filter: "", sortiert: null, absteigend: false, sichtbar: SEITE,
+    filter: "", sortiert: null, absteigend: false, seite: 0,
   });
   return `<div class="datentabelle" id="${id}"></div>`;
 }
 
 function sichtbareZeilen(z) {
+  // Ergebnis merken: Bei Hunderttausenden Zeilen darf nicht bei jedem
+  // Blättern neu gefiltert und sortiert werden.
+  const kennung = `${z.filter}\u001f${z.sortiert}\u001f${z.absteigend}`;
+  if (z.gemerktFuer === kennung) return z.gemerkt;
+
   let zeilen = z.zeilen;
   if (z.filter) {
     const suche = z.filter.toLowerCase();
     zeilen = zeilen.filter(r =>
-      z.spalten.some(s => String(s.wert(r) ?? "").toLowerCase().includes(suche)));
+      z.spalten.some(s => String(s.csv ? s.csv(r) : s.wert(r) ?? "").toLowerCase().includes(suche)));
   }
   if (z.sortiert !== null) {
     const s = z.spalten[z.sortiert];
+    const roh = r => (s.csv ? s.csv(r) : s.wert(r));
     zeilen = [...zeilen].sort((a, b) => {
-      const x = s.wert(a), y = s.wert(b);
-      // Zahlen als Zahlen vergleichen, sonst stünde 10 vor 9.
-      const zx = typeof x === "number" ? x : Number(String(x).replace(/[^\d.-]/g, ""));
-      const zy = typeof y === "number" ? y : Number(String(y).replace(/[^\d.-]/g, ""));
+      const x = roh(a), y = roh(b);
+      const zx = Number(x), zy = Number(y);
       const cmp = (s.zahl && !isNaN(zx) && !isNaN(zy))
         ? zx - zy
-        : String(x).localeCompare(String(y), "de");
+        : String(x ?? "").localeCompare(String(y ?? ""), "de");
       return z.absteigend ? -cmp : cmp;
     });
   }
+  z.gemerktFuer = kennung;
+  z.gemerkt = zeilen;
   return zeilen;
 }
 
@@ -719,66 +742,94 @@ function zeichneTabelle(id) {
   if (!z || !behaelter) return;
 
   const gefiltert = sichtbareZeilen(z);
-  const zeigen = gefiltert.slice(0, z.sichtbar);
+  const maxSeite = Math.max(Math.ceil(gefiltert.length / SEITE) - 1, 0);
+  z.seite = Math.min(z.seite, maxSeite);
+  const von = z.seite * SEITE;
+  const zeigen = gefiltert.slice(von, von + SEITE);
 
   const kopf = z.spalten.map((s, i) => {
     const pfeil = z.sortiert === i ? (z.absteigend ? " ↓" : " ↑") : "";
     return `<th class="${s.zahl ? "zahl " : ""}sortierbar" data-sort="${i}">${escape(s.kopf)}${pfeil}</th>`;
   }).join("");
 
-  const koerper = zeigen.map(r =>
-    "<tr>" + z.spalten.map(s =>
+  const koerper = zeigen.map((r, k) =>
+    `<tr><td class="lfd">${zahl(von + k + 1)}</td>` + z.spalten.map(s =>
       `<td class="${s.klasse ?? ""}">${s.roh ? s.wert(r) : escape(String(s.wert(r) ?? ""))}</td>`
     ).join("") + "</tr>").join("");
 
   behaelter.innerHTML = `
     <div class="reihe" style="margin-bottom:.5rem">
       <input type="text" class="filter" placeholder="filtern …" value="${escape(z.filter)}"
-             style="max-width:320px" autocomplete="off">
+             style="max-width:280px" autocomplete="off">
       <span class="hinweis">${
-        z.filter
-          ? `${zahl(gefiltert.length)} von ${zahl(z.zeilen.length)}`
-          : viele(z.zeilen.length, "Zeile", "Zeilen")
-      }${zeigen.length < gefiltert.length ? ` — ${zahl(zeigen.length)} angezeigt` : ""}</span>
+        z.filter ? `${zahl(gefiltert.length)} von ${zahl(z.zeilen.length)}` : viele(z.zeilen.length, "Zeile", "Zeilen")
+      }</span>
       <div style="flex:1"></div>
+      <div class="blaettern">
+        <button type="button" data-blatt="erste" title="erste Seite">«</button>
+        <button type="button" data-blatt="zurueck" title="zurück">‹</button>
+        <span class="hinweis" style="min-width:11ch;text-align:center">
+          ${zahl(z.seite + 1)} von ${zahl(maxSeite + 1)}</span>
+        <button type="button" data-blatt="vor" title="vor">›</button>
+        <button type="button" data-blatt="letzte" title="letzte Seite">»</button>
+        <input type="text" class="springen" placeholder="zu Zeile" inputmode="numeric" style="width:9ch">
+      </div>
       <button type="button" class="mini alsCsv">als CSV</button>
     </div>
-    <div class="rahmen"><table><thead><tr>${kopf}</tr></thead><tbody>${koerper}</tbody></table></div>
-    ${zeigen.length < gefiltert.length
-      ? `<div style="text-align:center;margin-top:.5rem">
-           <button type="button" class="mini mehr">weitere ${zahl(Math.min(SEITE, gefiltert.length - zeigen.length))} anzeigen</button>
-         </div>` : ""}`;
+    <div class="rahmen"><table><thead><tr><th class="lfd"></th>${kopf}</tr></thead>
+      <tbody>${koerper}</tbody></table></div>`;
 
-  behaelter.querySelector(".filter").addEventListener("input", ev => {
+  const filterfeld = behaelter.querySelector(".filter");
+  filterfeld.addEventListener("input", ev => {
     z.filter = ev.target.value;
-    z.sichtbar = SEITE;
+    z.seite = 0;
     zeichneTabelle(id);
-    // Der Fokus geht beim Neuzeichnen verloren; ohne das hier tippt man
-    // nach dem ersten Zeichen ins Leere.
-    const f = behaelter.querySelector(".filter");
+    // Der Fokus geht beim Neuzeichnen verloren; ohne das tippt man nach dem
+    // ersten Zeichen ins Leere.
+    const f = $(id).querySelector(".filter");
     f.focus();
     f.setSelectionRange(f.value.length, f.value.length);
   });
+
   behaelter.querySelectorAll("[data-sort]").forEach(th =>
     th.addEventListener("click", () => {
       const i = Number(th.dataset.sort);
       if (z.sortiert === i) z.absteigend = !z.absteigend;
       else { z.sortiert = i; z.absteigend = false }
+      z.seite = 0;
       zeichneTabelle(id);
     }));
-  behaelter.querySelector(".mehr")?.addEventListener("click", () => {
-    z.sichtbar += SEITE;
+
+  behaelter.querySelectorAll("[data-blatt]").forEach(k =>
+    k.addEventListener("click", () => {
+      const w = k.dataset.blatt;
+      z.seite = w === "erste" ? 0
+        : w === "zurueck" ? Math.max(z.seite - 1, 0)
+        : w === "vor" ? Math.min(z.seite + 1, maxSeite)
+        : maxSeite;
+      zeichneTabelle(id);
+    }));
+
+  behaelter.querySelector(".springen").addEventListener("keydown", ev => {
+    if (ev.key !== "Enter") return;
+    const n = Number.parseInt(ev.target.value, 10);
+    if (Number.isNaN(n)) return;
+    z.seite = Math.floor((Math.min(Math.max(n, 1), gefiltert.length) - 1) / SEITE);
     zeichneTabelle(id);
   });
+
   behaelter.querySelector(".alsCsv").addEventListener("click", () => alsCsv(id));
 }
 
 /**
- * Gibt die Liste als CSV aus — vollständig, nicht nur das Angezeigte, aber
- * gefiltert und sortiert wie auf dem Bildschirm.
+ * Gibt die Liste als CSV aus — vollständig, nicht nur die angezeigte Seite,
+ * aber gefiltert und sortiert wie auf dem Bildschirm.
  *
  * Semikolon als Trenner und eine Bytefolge am Anfang, weil deutsche
  * Tabellenkalkulationen die Datei sonst als eine einzige Spalte öffnen.
+ *
+ * Zusammengesetzt wird stückweise: Eine Zeichenkette aus einer Million Zeilen
+ * am Stück zu bilden kostet unnötig Speicher.
  */
 function alsCsv(id) {
   const z = tabellenZustand.get(id);
@@ -788,17 +839,19 @@ function alsCsv(id) {
     return /[";\n\r]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
   };
   const zeilen = sichtbareZeilen(z);
-  const text = [
-    z.spalten.map(s => feld(s.kopf)).join(";"),
-    ...zeilen.map(r => z.spalten.map(s => feld(s.csv ? s.csv(r) : s.wert(r))).join(";")),
-  ].join("\r\n");
+  const teile = ["\ufeff" + z.spalten.map(s => feld(s.kopf)).join(";") + "\r\n"];
+  const block = [];
+  for (const r of zeilen) {
+    block.push(z.spalten.map(s => feld(s.csv ? s.csv(r) : s.wert(r))).join(";"));
+    if (block.length >= 5000) { teile.push(block.join("\r\n") + "\r\n"); block.length = 0 }
+  }
+  if (block.length) teile.push(block.join("\r\n") + "\r\n");
 
-  const blob = new Blob(["\ufeff" + text], { type: "text/csv;charset=utf-8" });
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
+  a.href = URL.createObjectURL(new Blob(teile, { type: "text/csv;charset=utf-8" }));
   a.download = z.dateiname;
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+  setTimeout(() => URL.revokeObjectURL(a.href), 30_000);
 }
 
 /** Zeichnet alle Tabellen, die im Bericht angelegt wurden. */

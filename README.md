@@ -225,6 +225,29 @@ Inhalte zwischen Datensätzen, leer gegen fehlend.
 
 Jeder Bericht führt diese Grenzen selbst auf.
 
+## Die Listen
+
+Alle Abweichungslisten laufen über dieselbe Tabelle — mit **Blättern statt
+Nachladen**, wie im [CSV-Betrachter](https://github.com/Lomtech/csvrs):
+Es stehen immer nur 50 Zeilen im Baum, gleichgültig wie lang die Liste ist.
+
+Gemessen an einer Million Zeilen:
+
+| | |
+|---|---|
+| erste Anzeige | 5 ms |
+| Zeilen im Baum | 50 |
+| Blättern | 1 ms |
+| Filtern (27.027 Treffer von 1.000.000) | 105 ms |
+| Sortieren danach | 86 ms |
+| zu Zeile springen | 1 ms |
+
+Filter- und Sortierergebnis werden gemerkt, deshalb kostet jedes weitere
+Blättern nichts mehr. Die CSV-Ausgabe enthält die **gefilterte und sortierte
+Liste vollständig** — nicht nur die angezeigte Seite — und wird stückweise
+zusammengesetzt, damit eine Million Zeilen nicht als eine Zeichenkette im
+Speicher stehen muss.
+
 ## Prüfdaten
 
 Die Dateien unter `pruefdaten/` sind **erfunden**. Sie haben die Struktur
