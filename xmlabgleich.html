@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta name="quelltext" content="a7512e8fc7ea54be">
+<meta name="quelltext" content="0bb782814bf725ee">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>xmlabgleich</title>
@@ -368,6 +368,7 @@ $("starten").addEventListener("click", async () => {
   $("starten").disabled = false;
 
   const e = vergleiche(a, b);
+  e.schluesselFeld = schluessel;
   zeigeBericht(e, datensatz, schluessel);
   standSpeichern({ bericht: e });
 
@@ -527,9 +528,14 @@ function fehlendeDatensaetze(e) {
     ...nurQuelle.map(k => ({ schluessel: k, wo: "fehlt im Ziel" })),
     ...nurZiel.map(k => ({ schluessel: k, wo: "nur im Ziel" })),
   ];
+  const gemeinsam = a.filter(k => inB.has(k)).length;
 
+  // Ohne gemeinsame Datensätze ist jeder weitere Vergleich sinnlos — dann
+  // stehen sich zwei Bestände gegenüber, die nichts miteinander zu tun haben.
+  // Das ist die Auskunft, und keine Liste von 59 Feldern.
   return `<div class="karte" style="border-color:var(--schlecht)">
       <b>${zahl(e.a.datensaetze)} Datensätze in der Quelle, ${zahl(e.b.datensaetze)} im Ziel.</b>
+      ${gemeinsam ? `${zahl(gemeinsam)} kommen in beiden vor.` : ""}
       <div class="hinweis" style="margin-top:.4rem">
         Damit weicht zwangsläufig fast jedes Feld ab: Die Werte fehlender Datensätze
         fehlen mit. Die Feldliste weiter unten sagt hier wenig — was zählt, ist
@@ -899,6 +905,27 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
     ${seite("Ziel", e.dateiB, e.b)}
   </div></div>`);
 
+  // Haben die Dateien überhaupt gemeinsame Datensätze? Wenn nicht, ist alles
+  // Weitere Rauschen — dann gehört diese Auskunft nach oben und nicht unter
+  // einundzwanzig Feldzeilen.
+  const schluesselA = e.a.ersteSchluessel ?? [], schluesselB = e.b.ersteSchluessel ?? [];
+  const inZiel = new Set(schluesselB);
+  const gemeinsameZahl = schluesselA.filter(k => inZiel.has(k)).length;
+  const ohneSchnittmenge = gemeinsameZahl === 0 && schluesselA.length > 0 && schluesselB.length > 0;
+
+  if (ohneSchnittmenge) {
+    t.push(`<div class="karte" style="border-color:var(--schlecht)">
+      <b>Die beiden Dateien haben keinen einzigen Datensatz gemeinsam.</b>
+      <div class="hinweis" style="margin-top:.4rem">
+        Verglichen wurde über <code>${escape(String(schluessel || "—"))}</code>.
+        Quelle: ${zahl(e.a.datensaetze)} Datensätze, z. B. <code>${escape(schluesselA[0] ?? "")}</code>.
+        Ziel: ${zahl(e.b.datensaetze)}, z. B. <code>${escape(schluesselB[0] ?? "")}</code>.
+        Entweder gehören die Dateien nicht zusammen, oder das Schlüsselfeld passt nicht.
+        Alles Folgende vergleicht dann zwei Bestände ohne Berührungspunkt.
+      </div>
+    </div>`);
+  }
+
   // ── Ebene 2 ── Feldbezeichnungen: welche Felder gibt es hier und dort.
   const felderTab = (e.tabellen ?? []).flatMap(tb => [
     ...(tb.ta?.spalten ?? []).map(s => ({ tabelle: tb.name, pfad: s[0], seite: "beide" })),
@@ -924,25 +951,38 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   const anordnungGleich = e.a.anordnung === e.b.anordnung;
   const folgeGleich = e.folgeGleich;
   t.push(`<h2>3 · Anordnung und Reihenfolge</h2>`);
+  if (ohneSchnittmenge) {
+    t.push(`<div class="karte hinweis">Ohne gemeinsame Datensätze sagt die Reihenfolge nichts.</div>`);
+  }
   t.push(`<div class="karte">
     <div><span class="marke ${anordnungGleich ? "gut" : "schlecht"}">${anordnungGleich ? "gleich" : "abweichend"}</span>
       Anordnung der Felder im Datensatz</div>
     <div style="margin-top:.5rem"><span class="marke ${folgeGleich ? "gut" : "schlecht"}">${folgeGleich ? "gleich" : "abweichend"}</span>
       Reihenfolge der Datensätze${!folgeGleich ? " — " + satzfolgeText(e) : ""}</div>
   </div>`);
-  if (!anordnungGleich) t.push(strukturTabelle(e));
+  if (!anordnungGleich && !ohneSchnittmenge) t.push(strukturTabelle(e));
 
-  // Die Satzfolge als Liste: welcher Datensatz steht an welcher Stelle.
+  // Die Satzfolge als Liste — aber nur, wenn beide Seiten dieselben
+  // Datensätze haben. Stehen dort verschiedene Bestände, ist jede Zeile
+  // „hier X, dort nichts" und die Liste sagt nichts über die Reihenfolge.
   const a = e.a.ersteSchluessel ?? [], b = e.b.ersteSchluessel ?? [];
-  const folgeZeilen = [];
-  for (let i = 0; i < Math.max(a.length, b.length); i++) {
-    if (a[i] !== b[i]) folgeZeilen.push({ nr: i + 1, a: a[i] ?? "—", b: b[i] ?? "—" });
+  const mengeB = new Set(b);
+  const gemeinsameSaetze = a.filter(k => mengeB.has(k)).length;
+
+  if (!folgeGleich && gemeinsameSaetze > 0 && !ohneSchnittmenge) {
+    const folgeZeilen = [];
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      if (a[i] !== b[i]) folgeZeilen.push({ nr: i + 1, a: a[i] ?? "—", b: b[i] ?? "—" });
+    }
+    t.push(datenTabelle("t-folge", [
+      { kopf: "Stelle", wert: z => z.nr, zahl: true, klasse: "zahl" },
+      { kopf: "Quelle", wert: z => z.a, klasse: "pfad" },
+      { kopf: "Ziel", wert: z => z.b, klasse: "pfad" },
+    ], folgeZeilen, "3_reihenfolge.csv"));
+  } else if (!folgeGleich && !ohneSchnittmenge) {
+    t.push(`<div class="karte hinweis">Die beiden Dateien enthalten verschiedene
+      Datensätze — über die Reihenfolge lässt sich damit nichts sagen.</div>`);
   }
-  t.push(datenTabelle("t-folge", [
-    { kopf: "Stelle", wert: z => z.nr, zahl: true, klasse: "zahl" },
-    { kopf: "Quelle", wert: z => z.a, klasse: "pfad" },
-    { kopf: "Ziel", wert: z => z.b, klasse: "pfad" },
-  ], folgeZeilen, "3_reihenfolge.csv"));
 
   // ── Ebene 4 ── Ausprägungen: welche Werte weichen ab.
   const werteFelder = e.spalten.filter(s => s.art === "abweichend");
@@ -956,12 +996,20 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
       ? ` <b>${zahl(e.a.datensaetze)} Datensätze in der Quelle, ${zahl(e.b.datensaetze)} im Ziel</b>
           — fehlende Datensätze bringen fehlende Werte mit.` : ""}
   </div>`);
-  t.push(datenTabelle("t-felder", [
+  const feldliste = datenTabelle("t-felder", [
     { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
     { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
     { kopf: "Werte Quelle", wert: s => s.a ? s.a[3] : 0, zahl: true, klasse: "zahl" },
     { kopf: "Werte Ziel", wert: s => s.b ? s.b[3] : 0, zahl: true, klasse: "zahl" },
-  ], werteFelder, "4_felder_mit_abweichung.csv"));
+  ], werteFelder, "4_felder_mit_abweichung.csv");
+  // Ohne Schnittmenge weicht zwangsläufig jedes Feld ab — dann ist die Liste
+  // erwartbar und steht eingeklappt da, statt den Bericht zu füllen.
+  t.push(ohneSchnittmenge && feldliste
+    ? `<details class="karte"><summary style="cursor:pointer">
+         ${viele(werteFelder.length, "Feld", "Felder")} — zwangsläufig, weil kein
+         Datensatz gemeinsam ist <span class="hinweis">(zum Aufklappen)</span></summary>
+       <div style="margin-top:.75rem">${feldliste}</div></details>`
+    : feldliste);
 
   // Die einzelnen Werte kommen aus dem zweiten Durchlauf und werden hier
   // nachgereicht.
@@ -1162,7 +1210,10 @@ function schlank(bericht) {
   const ohneEimer = (abdruck) => abdruck && ({
     ...abdruck,
     tabellen: (abdruck.tabellen ?? []).map(({ eimer, ...rest }) => rest),
-    ersteSchluessel: (abdruck.ersteSchluessel ?? []).slice(0, 50),
+    // Nicht kürzen: Diese Liste beantwortet die Frage, welche Datensätze
+    // fehlen. Gekürzt gespeichert war sie nach einem Neuladen unvollständig,
+    // ohne dass es auffiel.
+    ersteSchluessel: abdruck.ersteSchluessel ?? [],
   });
   return {
     ...bericht,
