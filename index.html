@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta name="quelltext" content="f6d1b4d3ef682850">
+<meta name="quelltext" content="d62855f82aaee865">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>xmlabgleich</title>
@@ -163,6 +163,8 @@ const WASM_BASE64 = "AGFzbQEAAAABpAEWYAN/f38BfmACf38AYAN/f38Bf2ACf38Bf2AEf39/fwB
 
 const $ = id => document.getElementById(id);
 const zahl = n => (n ?? 0).toLocaleString("de-DE");
+/** „1 Datensatz" statt „1 Datensätze". */
+const saetze = n => `${zahl(n)} ${n === 1 ? "Datensatz" : "Datensätze"}`;
 
 /** Beugt mit — ein Bericht, der „1 Datensätze" schreibt, wird nicht ernst genommen. */
 const viele = (n, einzahl, mehrzahl) => `${zahl(n)} ${n === 1 ? einzahl : mehrzahl}`;
@@ -1008,33 +1010,46 @@ function zeigeBefunde(e, einzelheiten) {
   // Schlüsselfeld, das auf beiden Seiten etwas anderes benennt. Statt „0" zu
   // melden und den Nutzer raten zu lassen, wird beides nebeneinandergestellt.
   if (!gemeinsame.length && sa.length && sb.length) {
+    // Die Beispiele NICHT nebeneinander in eine Tabelle: Eine Tabellenzeile
+    // behauptet, die beiden Werte gehörten zusammen. Hier sind es zwei
+    // unabhängige Listen, und ein „—" läse sich als „fehlt" statt als
+    // „diese Liste ist kürzer".
+    const probe = (titel, liste, datei) => `
+      <div style="margin:.6rem 0">
+        <div class="hinweis">${titel} — ${escape(datei ?? "")}, ${saetze(liste.length)}</div>
+        ${liste.slice(0, 3).map(s => `<div><code>${escape(s)}</code></div>`).join("")}
+        ${liste.length > 3 ? `<div class="hinweis">… und ${zahl(liste.length - 3)} weitere</div>` : ""}
+      </div>`;
+
+    // Bei sehr unterschiedlicher Größe ist fast immer die Dateiauswahl schuld,
+    // nicht das Schlüsselfeld. Dann zuerst danach fragen.
+    const gross = Math.max(sa.length, sb.length), klein = Math.min(sa.length, sb.length);
+    const schief = gross >= klein * 20;
+
     platz.innerHTML = `<div class="karte">
       <span class="marke schlecht">nichts gemeinsam</span>
-      <p>Die beiden Dateien haben <b>keinen einzigen Datensatz gemeinsam</b>:
-      ${zahl(sa.length)} in <b>${escape(dateien.a?.name ?? "der Quelle")}</b>,
-      ${zahl(sb.length)} in <b>${escape(dateien.b?.name ?? "dem Ziel")}</b>, und
-      kein <code>${escape($("schluessel").value)}</code> kommt auf beiden Seiten vor.</p>
-      <p>So sehen die Schlüssel aus — passen sie inhaltlich überhaupt zueinander?</p>
-      <table style="margin:.3rem 0">
-        <tr><th>Quelle</th><th>Ziel</th></tr>
-        ${Array.from({ length: Math.min(4, Math.max(sa.length, sb.length)) }, (_, i) =>
-          `<tr><td><code>${escape(sa[i] ?? "—")}</code></td>
-               <td><code>${escape(sb[i] ?? "—")}</code></td></tr>`).join("")}
-      </table>
-      <p class="hinweis">Sehen die Werte gleichartig aus, sind es schlicht verschiedene
-      Bestände. Sehen sie verschieden aus, benennt <code>${escape($("schluessel").value)}</code>
-      auf beiden Seiten nicht dasselbe — dann oben ein anderes Schlüsselfeld wählen.</p>
+      <p>Kein einziger Datensatz kommt in beiden Dateien vor.</p>
+      ${probe("In der Quelle steht", sa, dateien.a?.name)}
+      ${probe("Im Ziel steht", sb, dateien.b?.name)}
+      <p>${schief
+        ? `Die eine Datei ist ${Math.round(gross / Math.max(1, klein))}-mal so groß wie die
+           andere und die Bezeichnungen haben nichts miteinander zu tun. <b>Sind das die
+           beiden Dateien, die Sie vergleichen wollten?</b> Zusammen gehören meist ein
+           Anfangs- und ein Änderungsstand desselben Bestands.`
+        : `Sehen die Werte gleichartig aus, sind es zwei verschiedene Bestände. Sehen sie
+           verschieden aus, benennt <code>${escape($("schluessel").value)}</code> auf beiden
+           Seiten nicht dasselbe — dann oben ein anderes Schlüsselfeld wählen.`}</p>
     </div>`;
     return;
   }
 
   const rahmen = `<div class="karte">
       <div class="hinweis" style="margin-bottom:.5rem">
-        <b>${escape(dateien.a?.name ?? "Quelle")}</b> (${zahl(e.a.datensaetze)} Datensätze)
+        <b>${escape(dateien.a?.name ?? "Quelle")}</b> (${saetze(e.a.datensaetze)})
         gegen <b>${escape(dateien.b?.name ?? "Ziel")}</b> (${zahl(e.b.datensaetze)}),
         wiedererkannt an <code>${escape($("schluessel").value)}</code></div>
       <table style="margin:0">
-        <tr><td><b>${zahl(gemeinsame.length)}</b> Datensätze in beiden Dateien</td>
+        <tr><td><b>${zahl(gemeinsame.length)}</b> ${gemeinsame.length === 1 ? "Datensatz" : "Datensätze"} in beiden Dateien</td>
             <td class="zahl">${gemeinsame.length
               ? (geaenderteSaetze.size
                   ? `<span class="marke schlecht">${zahl(geaenderteSaetze.size)} davon geändert</span>`
