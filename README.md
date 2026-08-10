@@ -227,26 +227,39 @@ Jeder Bericht führt diese Grenzen selbst auf.
 
 ## Der Bericht
 
-Die vier Ebenen der Reihe nach, jede mit ihrer vollständigen Liste als CSV:
+Oben steht **eine Liste aller Unterschiede** — was, wo, warum:
 
-| | Abschnitt | Ausgabe |
+```
+1 × Datensatz fehlt im Ziel
+1 × Wert abweichend
+1 × Wert fehlt im Ziel
+
+Was                       Datensatz              Feld                     Quelle    Ziel
+Datensatz fehlt im Ziel   SUEDKASSE BORDURIA …                            vorhanden fehlt
+Wert abweichend           NORDBANK RURITANIA …   GENERALDATA/ISSUEPRICE   83.9261   983.9261
+Wert fehlt im Ziel        NORDBANK RURITANIA …   GENERALDATA/QUOTATION    1
+```
+
+Eine Zeile je Befund, filterbar, sortierbar, vollständig als
+`unterschiede.csv`. Die Felder eines fehlenden Datensatzes stehen **nicht**
+einzeln darin — sie fehlen mit dem Satz, und aus einem Befund würden sonst
+vierundzwanzig.
+
+Darunter, eingeklappt: **wie das geprüft wurde** — die vier Ebenen als
+Herleitung, jede mit eigener CSV.
+
+| | Ebene | Ausgabe |
 |---|---|---|
-| 1 | **Fingerabdruck** — gleich oder nicht | — |
-| 2 | **Feldbezeichnungen** — welche Felder nur eine Seite kennt | `2_feldbezeichnungen.csv` |
-| 3 | **Anordnung und Reihenfolge** — welche Stelle, welcher Datensatz | `3_reihenfolge.csv` |
-| 4 | **Ausprägungen** — welches Feld, welcher Wert | `4_felder_mit_abweichung.csv`, `4_werte.csv` |
+| 1 | Fingerabdruck — gleich oder nicht | — |
+| 2 | Feldbezeichnungen | `2_feldbezeichnungen.csv` |
+| 3 | Anordnung und Reihenfolge | `3_reihenfolge.csv` |
+| 4 | Ausprägungen | `4_felder_mit_abweichung.csv`, `4_werte.csv` |
 
-Jede Liste blättert seitenweise, wie im [CSV-Betrachter](https://github.com/Lomtech/csvrs):
-Es stehen immer nur 50 Zeilen im Baum, gleichgültig wie lang die Liste ist.
-Gemessen an einer Million Zeilen — erste Anzeige 5 ms, Blättern 1 ms, Filtern
-105 ms, Sortieren 86 ms, zu Zeile springen 1 ms. Filter- und Sortierergebnis
-werden gemerkt, weiteres Blättern kostet nichts.
-
-Die CSV enthält die **gefilterte und sortierte Liste vollständig** — nicht nur
-die angezeigte Seite. Semikolon als Trenner und eine Bytefolge am Anfang,
-sonst öffnen deutsche Tabellenkalkulationen alles in einer Spalte.
-Zusammengesetzt wird stückweise, damit eine Million Zeilen nicht als eine
-Zeichenkette im Speicher steht.
+Jede Liste blättert seitenweise wie im
+[CSV-Betrachter](https://github.com/Lomtech/csvrs): immer nur 50 Zeilen im
+Baum. Gemessen an einer Million Zeilen — erste Anzeige 5 ms, Blättern 1 ms,
+Filtern 105 ms, Sortieren 86 ms. Die CSV enthält die gefilterte und sortierte
+Liste vollständig, nicht nur die angezeigte Seite.
 
 ## Prüfdaten
 

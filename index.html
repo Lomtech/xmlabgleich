@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="de">
 <head>
-<meta name="quelltext" content="0bb782814bf725ee">
+<meta name="quelltext" content="605dfd9600d2d204">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>xmlabgleich</title>
@@ -383,6 +383,8 @@ $("starten").addEventListener("click", async () => {
   // ist nicht Sache des Werkzeugs.
   if (!e.bestanden && schluessel && e.spalten.some(s => s.art === "abweichend")) {
     const gefunden = await zeigeEinzelheiten(w, e, konfig);
+    // Jetzt sind auch die einzelnen Werte da — die Befundliste bekommt sie.
+    zeigeBefunde(e, gefunden ?? null);
     standSpeichern({ bericht: e, einzelheiten: gefunden ?? null });
   }
 });
@@ -875,6 +877,109 @@ function tabellenZeichnen() {
   for (const id of tabellenZustand.keys()) zeichneTabelle(id);
 }
 
+
+/**
+ * Alle Unterschiede in einer Liste — was, wo, warum.
+ *
+ * Der Bericht war bisher nach dem Rechenweg gegliedert: Fingerabdruck,
+ * Feldbezeichnungen, Anordnung, Ausprägungen. Das sind die Stufen des
+ * Verfahrens, nicht die Frage, mit der jemand herkommt. Die lautet: Was fehlt,
+ * wo steht es, und warum ist es ein Unterschied. Diese Liste beantwortet
+ * genau das; die Ebenen stehen darunter als Herleitung.
+ */
+function befundListe(e, einzelheiten) {
+  const befunde = [];
+  const a = e.a.ersteSchluessel ?? [], b = e.b.ersteSchluessel ?? [];
+  const inB = new Set(b), inA = new Set(a);
+
+  // Datensätze, die es nur auf einer Seite gibt.
+  for (const k of a) if (!inB.has(k)) befunde.push({
+    art: "Datensatz fehlt im Ziel", datensatz: k, feld: "", quelle: "vorhanden", ziel: "fehlt",
+  });
+  for (const k of b) if (!inA.has(k)) befunde.push({
+    art: "Datensatz nur im Ziel", datensatz: k, feld: "", quelle: "fehlt", ziel: "vorhanden",
+  });
+
+  // Felder, die es nur auf einer Seite gibt.
+  for (const s of e.spalten) {
+    if (s.art === "nur-quelle") befunde.push({
+      art: "Feld fehlt im Ziel", datensatz: "", feld: feldName(s), quelle: "vorhanden", ziel: "fehlt",
+    });
+    else if (s.art === "nur-ziel") befunde.push({
+      art: "Feld nur im Ziel", datensatz: "", feld: feldName(s), quelle: "fehlt", ziel: "vorhanden",
+    });
+  }
+
+  // Die einzelnen Werte, sobald der zweite Durchlauf sie geliefert hat.
+  //
+  // Übersprungen werden Werte aus Datensätzen, die ohnehin schon als fehlend
+  // gemeldet sind: Fehlt der Satz, fehlen seine dreiundzwanzig Felder
+  // zwangsläufig mit. Diese Zeilen aufzuführen macht aus einem Befund
+  // vierundzwanzig und verdeckt die zwei, auf die es ankommt.
+  const fehlendeSaetze = new Set(befunde
+    .filter(bf => bf.art.startsWith("Datensatz"))
+    .map(bf => bf.datensatz));
+
+  for (const u of einzelheiten?.unterschiede ?? []) {
+    // Der Schlüssel einer Untertabellenzeile trägt den Datensatz vorn.
+    const satz = String(u.schluessel).split("#")[0];
+    if (fehlendeSaetze.has(satz)) continue;
+    befunde.push({
+      art: u.a === undefined ? "Wert nur im Ziel"
+         : u.b === undefined ? "Wert fehlt im Ziel" : "Wert abweichend",
+      datensatz: u.schluessel,
+      feld: (u.tabelle ? u.tabelle + " ▸ " : "") + u.pfad,
+      quelle: u.a ?? "", ziel: u.b ?? "",
+    });
+  }
+
+  return befunde;
+}
+
+function feldName(s) {
+  return (s.tabelle ? s.tabelle + " ▸ " : "") + s.pfad;
+}
+
+/** Zeichnet die Befundliste an ihren Platz. */
+function zeigeBefunde(e, einzelheiten) {
+  const platz = $("befunde-platz");
+  if (!platz) return;
+  const befunde = befundListe(e, einzelheiten);
+
+  // Nach Art zusammenfassen, damit auf einen Blick dasteht, worum es geht.
+  const nachArt = new Map();
+  for (const bf of befunde) nachArt.set(bf.art, (nachArt.get(bf.art) ?? 0) + 1);
+
+  if (!befunde.length) {
+    platz.innerHTML = `<div class="karte"><span class="marke gut">gleich</span>
+      Kein Unterschied gefunden.</div>`;
+    return;
+  }
+
+  const nochOffen = !einzelheiten && e.spalten.some(s => s.art === "abweichend");
+
+  platz.innerHTML = `
+    <div class="karte">
+      ${[...nachArt.entries()].map(([art, n]) =>
+        `<div style="margin:.15rem 0"><b>${zahl(n)}</b> × ${escape(art)}</div>`).join("")}
+      ${nachArt.has("Datensatz fehlt im Ziel") || nachArt.has("Datensatz nur im Ziel")
+        ? `<div class="hinweis" style="margin-top:.5rem">Die Felder fehlender Datensätze
+           sind nicht einzeln aufgeführt — sie fehlen mit dem Satz.</div>` : ""}
+      ${nochOffen ? `<div class="hinweis" style="margin-top:.5rem">
+        <span class="loading">Die einzelnen Werte werden noch nachgelesen</span></div>` : ""}
+    </div>
+    ${datenTabelle("t-befunde", [
+      { kopf: "Was", wert: bf => bf.art },
+      { kopf: "Datensatz", wert: bf => bf.datensatz, klasse: "pfad" },
+      { kopf: "Feld", wert: bf => bf.feld, klasse: "pfad" },
+      { kopf: "Quelle", csv: bf => bf.quelle, roh: true,
+        wert: bf => bf.art === "Wert abweichend" ? hervorheben(bf.quelle, bf.ziel) : escape(bf.quelle) },
+      { kopf: "Ziel", csv: bf => bf.ziel, roh: true,
+        wert: bf => bf.art === "Wert abweichend" ? hervorheben(bf.ziel, bf.quelle) : escape(bf.ziel) },
+    ], befunde, "unterschiede.csv")}`;
+  tabellenZeichnen();
+}
+
 /* ─────────────────────────────────────────── Bericht */
 
 /** Weichen die Datensatzzahlen ab? Dann ist alles Weitere Folge davon. */
@@ -882,6 +987,14 @@ function mengeAnders(e) { return e.a.datensaetze !== e.b.datensaetze }
 
 function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   const t = [];
+
+  // Die Befundliste zuerst — sie beantwortet die Frage. Die Ebenen darunter
+  // zeigen, wie das Werkzeug darauf gekommen ist.
+  t.push(`<h2>Unterschiede</h2><div id="befunde-platz"></div>`);
+  t.push(`<details class="karte" style="margin-top:1.5rem"><summary style="cursor:pointer">
+      <b>Wie das geprüft wurde</b>
+      <span class="hinweis">— vier Ebenen, zum Aufklappen</span>
+    </summary><div id="ebenen" style="margin-top:1rem">`);
 
   // ── Ebene 1 ── Fingerabdruck: gleich oder nicht.
   const gleich = e.a.gesamt === e.b.gesamt;
@@ -1017,6 +1130,8 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
 
   if (e.a.datensaetze !== e.b.datensaetze) t.push(fehlendeDatensaetze(e));
 
+  t.push(`</div></details>`);
+
   t.push(`<h2>Nicht geprüft</h2><div class="karte"><ul class="grenzen">
     <li>Die Prüfwerte schützen vor Versehen, nicht vor absichtlicher Veränderung —
         FNV-1a ist kein kryptographisches Verfahren.</li>
@@ -1028,6 +1143,7 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
 
   (ziel ?? $("ergebnis")).innerHTML = t.join("");
   tabellenZeichnen();
+  zeigeBefunde(e, e.gemerkteEinzelheiten ?? null);
 }
 
 /**
@@ -1382,6 +1498,7 @@ function zeigeGemerktenBericht(stand) {
   const zuvor = document.createElement("div");
   $("ergebnis").append(zuvor);
   try {
+    stand.bericht.gemerkteEinzelheiten = stand.einzelheiten;
     zeigeBericht(stand.bericht, stand.datensatz, stand.schluessel, zuvor);
     zeigeGemerkteEinzelheiten(stand.einzelheiten, zuvor);
   } catch (fehler) {
