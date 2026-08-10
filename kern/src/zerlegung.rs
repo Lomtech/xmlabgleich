@@ -296,6 +296,22 @@ impl Zerlegung {
         ((h as u64) << 32) | h2 as u64
     }
 
+    /// Selbstkontrolle: Jeder Wert geht in genau eine Spalte und genau eine
+    /// Zeile ein, also müssen beide Achsen je Tabelle dieselbe Summe ergeben.
+    /// Stimmt das nicht, ist nicht die Datei falsch, sondern der Abdruck.
+    pub fn stimmig(&self) -> bool {
+        self.tabellen.values().all(|t| {
+            let (mut s, mut z) = (0u32, 0u32);
+            for w in t.spalten.values() {
+                s = s.wrapping_add(w.summe);
+            }
+            for e in &t.zeilen {
+                z = z.wrapping_add(e.summe);
+            }
+            s == z
+        })
+    }
+
     pub fn haupt(&self) -> &Tabelle {
         &self.tabellen[&Vec::new()]
     }

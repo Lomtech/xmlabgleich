@@ -225,28 +225,28 @@ Inhalte zwischen Datensätzen, leer gegen fehlend.
 
 Jeder Bericht führt diese Grenzen selbst auf.
 
-## Die Listen
+## Der Bericht
 
-Alle Abweichungslisten laufen über dieselbe Tabelle — mit **Blättern statt
-Nachladen**, wie im [CSV-Betrachter](https://github.com/Lomtech/csvrs):
+Die vier Ebenen der Reihe nach, jede mit ihrer vollständigen Liste als CSV:
+
+| | Abschnitt | Ausgabe |
+|---|---|---|
+| 1 | **Fingerabdruck** — gleich oder nicht | — |
+| 2 | **Feldbezeichnungen** — welche Felder nur eine Seite kennt | `2_feldbezeichnungen.csv` |
+| 3 | **Anordnung und Reihenfolge** — welche Stelle, welcher Datensatz | `3_reihenfolge.csv` |
+| 4 | **Ausprägungen** — welches Feld, welcher Wert | `4_felder_mit_abweichung.csv`, `4_werte.csv` |
+
+Jede Liste blättert seitenweise, wie im [CSV-Betrachter](https://github.com/Lomtech/csvrs):
 Es stehen immer nur 50 Zeilen im Baum, gleichgültig wie lang die Liste ist.
+Gemessen an einer Million Zeilen — erste Anzeige 5 ms, Blättern 1 ms, Filtern
+105 ms, Sortieren 86 ms, zu Zeile springen 1 ms. Filter- und Sortierergebnis
+werden gemerkt, weiteres Blättern kostet nichts.
 
-Gemessen an einer Million Zeilen:
-
-| | |
-|---|---|
-| erste Anzeige | 5 ms |
-| Zeilen im Baum | 50 |
-| Blättern | 1 ms |
-| Filtern (27.027 Treffer von 1.000.000) | 105 ms |
-| Sortieren danach | 86 ms |
-| zu Zeile springen | 1 ms |
-
-Filter- und Sortierergebnis werden gemerkt, deshalb kostet jedes weitere
-Blättern nichts mehr. Die CSV-Ausgabe enthält die **gefilterte und sortierte
-Liste vollständig** — nicht nur die angezeigte Seite — und wird stückweise
-zusammengesetzt, damit eine Million Zeilen nicht als eine Zeichenkette im
-Speicher stehen muss.
+Die CSV enthält die **gefilterte und sortierte Liste vollständig** — nicht nur
+die angezeigte Seite. Semikolon als Trenner und eine Bytefolge am Anfang,
+sonst öffnen deutsche Tabellenkalkulationen alles in einer Spalte.
+Zusammengesetzt wird stückweise, damit eine Million Zeilen nicht als eine
+Zeichenkette im Speicher steht.
 
 ## Prüfdaten
 

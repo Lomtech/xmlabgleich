@@ -595,7 +595,9 @@ pub extern "C" fn zerlegung_fertig() {
         }
         j.push_str(std::str::from_utf8(teil).unwrap_or(""));
     }
-    j.push_str("\",\"datensaetze\":");
+    j.push_str("\",\"stimmig\":");
+    j.push_str(if z.stimmig() { "true" } else { "false" });
+    j.push_str(",\"datensaetze\":");
     j.push_str(&z.datensaetze.to_string());
     j.push_str(",\"ohneSchluessel\":");
     j.push_str(&z.ohne_schluessel.to_string());

@@ -376,7 +376,10 @@ $("starten").addEventListener("click", async () => {
   // Hier liegen aber beide Dateien auf demselben Rechner — es wandert nichts,
   // und die einzige Frage, die zählt, lautet: was steht da anders? Der erste
   // Durchlauf hat die Suche bereits auf wenige Datensätze eingegrenzt.
-  if (!e.bestanden && schluessel && e.spalten.length && e.eimer.length) {
+  // Der Nachlauf holt die einzelnen Werte. Er läuft, wenn es etwas
+  // nachzulesen gibt — ohne Abwägung, ob es sich lohnt: Das zu entscheiden
+  // ist nicht Sache des Werkzeugs.
+  if (!e.bestanden && schluessel && e.spalten.some(s => s.art === "abweichend")) {
     const gefunden = await zeigeEinzelheiten(w, e, konfig);
     standSpeichern({ bericht: e, einzelheiten: gefunden ?? null });
   }
@@ -406,10 +409,9 @@ async function zeigeEinzelheiten(w, e, konfig) {
   // Liefert die gefundenen Unterschiede zurück — sie gehören in den
   // gemerkten Stand, sonst fehlt nach einem Neuladen genau die Angabe,
   // wegen der man den Bericht aufschlägt.
-  const ziel = document.createElement("div");
-  ziel.innerHTML = `<h2>Welcher Wert?</h2>
-    <div class="karte hinweis"><span class="loading">Die betroffenen Datensätze werden gelesen …</span></div>`;
-  $("ergebnis").append(ziel);
+  const ziel = $("werte-platz") ?? $("ergebnis").appendChild(document.createElement("div"));
+  ziel.innerHTML = `<h3 style="margin:1.2rem 0 .5rem;font-size:.95rem">Welche Werte genau?</h3>
+    <div class="karte hinweis"><span class="loading">Die betroffenen Datensätze werden gelesen</span></div>`;
 
   // Je betroffener Tabelle ein gezielter Nachlauf — nur die abweichenden
   // Eimer und Felder, sonst läse man die Datei vollständig ein zweites Mal.
@@ -421,10 +423,15 @@ async function zeigeEinzelheiten(w, e, konfig) {
   let gekuerzt = false;
   let gruppen = 0;
 
-  for (const tb of betroffen.slice(0, 8)) {
+  for (const [nr, tb] of betroffen.slice(0, 8).entries()) {
     const eimer = tb.eimer.map(g => g.nr);
     const pfade = tb.spalten.filter(s => s.art === "abweichend").map(s => s.pfad);
     gruppen += eimer.length;
+    // Der Nachlauf liest beide Dateien je Tabelle erneut; bei großen Dateien
+    // dauert das, und ein stummer Ladepunkt sieht aus wie ein Hänger.
+    ziel.querySelector(".loading").textContent =
+      `${escape(tb.name || "Datensatz")} wird nachgelesen (${nr + 1} von ${Math.min(betroffen.length, 8)})`;
+    await new Promise(r => setTimeout(r, 0));
 
     const [ea, eb] = [
       await einzelheitenVon(w, dateien.a, konfig, eimer, pfade, tb.name),
@@ -452,7 +459,7 @@ async function zeigeEinzelheiten(w, e, konfig) {
     return [];
   }
 
-  const t = [`<h2>Welcher Wert?</h2>
+  const t = [`<h3 style="margin:1.2rem 0 .5rem;font-size:.95rem">Welche Werte genau?</h3>
     <div class="karte hinweis" style="margin-bottom:.75rem">
       ${viele(unterschiede.length, "Stelle unterscheidet", "Stellen unterscheiden")} sich —
       gefunden durch gezieltes Nachlesen ${gruppen === 1
@@ -468,7 +475,7 @@ async function zeigeEinzelheiten(w, e, konfig) {
       { kopf: "Feld", wert: z => z.pfad, klasse: "pfad" },
       { kopf: "Quelle", csv: z => z.a ?? "", roh: true, wert: z => hervorheben(z.a, z.b) },
       { kopf: "Ziel", csv: z => z.b ?? "", roh: true, wert: z => hervorheben(z.b, z.a) },
-    ], unterschiede, "abweichende_werte.csv")];
+    ], unterschiede, "4_werte.csv")];
 
   ziel.innerHTML = t.join("");
   tabellenZeichnen();
@@ -478,7 +485,7 @@ async function zeigeEinzelheiten(w, e, konfig) {
 /** Zeichnet einen gemerkten Klartext-Nachlauf ohne erneutes Lesen. */
 function zeigeGemerkteEinzelheiten(gemerkt, ziel) {
   if (!gemerkt?.unterschiede?.length) return;
-  const t = [`<h2>Welcher Wert?</h2>
+  const t = [`<h3 style="margin:1.2rem 0 .5rem;font-size:.95rem">Welche Werte genau?</h3>
     <div class="karte hinweis" style="margin-bottom:.75rem">
       ${viele(gemerkt.unterschiede.length, "Stelle unterscheidet", "Stellen unterscheiden")} sich —
       ${gemerkt.gruppen === 1 ? "aus der einen betroffenen Gruppe" : `aus ${zahl(gemerkt.gruppen)} betroffenen Gruppen`}.
@@ -491,10 +498,11 @@ function zeigeGemerkteEinzelheiten(gemerkt, ziel) {
       { kopf: "Feld", wert: z => z.pfad, klasse: "pfad" },
       { kopf: "Quelle", csv: z => z.a ?? "", roh: true, wert: z => hervorheben(z.a, z.b) },
       { kopf: "Ziel", csv: z => z.b ?? "", roh: true, wert: z => hervorheben(z.b, z.a) },
-    ], gemerkt.unterschiede, "abweichende_werte.csv")];
-  const kasten = document.createElement("div");
+    ], gemerkt.unterschiede, "4_werte.csv")];
+  const platz = ziel.querySelector("#werte-platz");
+  const kasten = platz ?? document.createElement("div");
   kasten.innerHTML = t.join("");
-  ziel.append(kasten);
+  if (!platz) ziel.append(kasten);
   tabellenZeichnen();
 }
 
@@ -532,7 +540,7 @@ function fehlendeDatensaetze(e) {
       ? datenTabelle("t-fehlend", [
           { kopf: "Datensatz", wert: z => z.schluessel, klasse: "pfad" },
           { kopf: "", wert: z => z.wo },
-        ], zeilen, "fehlende_datensaetze.csv")
+        ], zeilen, "4_fehlende_datensaetze.csv")
       : `<div class="karte hinweis">Die Schlüssel selbst ließen sich nicht
          gegenüberstellen — vermutlich ist das gewählte Schlüsselfeld nicht eindeutig.</div>`);
 }
@@ -565,7 +573,7 @@ function datensatzUebersicht(unterschiede) {
       ? datenTabelle("t-saetze", [
           { kopf: "Datensatz", wert: z => z.satz, klasse: "pfad" },
           { kopf: "abweichende Stellen", wert: z => z.n, zahl: true, klasse: "zahl" },
-        ], zeilen, "betroffene_datensaetze.csv")
+        ], zeilen, "4_betroffene_datensaetze.csv")
       : "");
 }
 
@@ -699,6 +707,8 @@ const SEITE = 50;
 const tabellenZustand = new Map();
 
 function datenTabelle(id, spalten, zeilen, dateiname) {
+  // Eine leere Liste braucht weder Kopf noch Filter noch Ausgabeknopf.
+  if (!zeilen.length) return "";
   tabellenZustand.set(id, {
     spalten, zeilen, dateiname,
     filter: "", sortiert: null, absteigend: false, seite: 0,
@@ -860,194 +870,103 @@ function tabellenZeichnen() {
 
 /* ─────────────────────────────────────────── Bericht */
 
+/** Weichen die Datensatzzahlen ab? Dann ist alles Weitere Folge davon. */
+function mengeAnders(e) { return e.a.datensaetze !== e.b.datensaetze }
+
 function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   const t = [];
-  const proEimer = Math.max(1, Math.round(e.a.datensaetze / EIMER));
 
-  // Erster Schritt: ein einziger Wert. Er beantwortet die Frage, ob überhaupt
-  // etwas abweicht — und ist kurz genug, um ihn vorzulesen oder in ein Ticket
-  // zu schreiben, ohne dass eine Datei den Betrieb verlässt.
+  // ── Ebene 1 ── Fingerabdruck: gleich oder nicht.
   const gleich = e.a.gesamt === e.b.gesamt;
-  t.push(`<div class="karte" style="text-align:center">
-    <div class="hinweis">Fingerabdruck</div>
-    <div style="display:flex;gap:1.5rem;justify-content:center;align-items:center;flex-wrap:wrap;margin:.6rem 0">
-      <code style="font-size:1.15rem;letter-spacing:.04em">${e.a.gesamt}</code>
-      <span style="font-size:1.3rem;color:var(--${gleich ? "gut" : "schlecht"})">${gleich ? "=" : "≠"}</span>
-      <code style="font-size:1.15rem;letter-spacing:.04em">${e.b.gesamt}</code>
-    </div>
-    <div class="hinweis">${gleich
-      ? "Gleich — eine Abweichung ist damit sehr unwahrscheinlich, aber nicht ausgeschlossen. Die Ränder unten sind die eigentliche Prüfung."
-      : "Verschieden — die beiden Dateien tragen sicher nicht denselben Inhalt. Wo, sagen die drei Ebenen."}</div>
-    ${(!e.a.stimmig || !e.b.stimmig) ? `<div class="hinweis" style="color:var(--schlecht);margin-top:.5rem">
-      <b>Achtung:</b> Spalten- und Zeilenachse ergeben nicht dieselbe Summe. Der Abdruck selbst ist fehlerhaft.
-    </div>` : ""}
-  </div>`);
-
-  // Die drei Ebenen einzeln. Sie haben verschiedene Ursachen und verschiedene
-  // Reichweiten — eine geänderte Struktur betrifft jeden Datensatz, ein
-  // geänderter Wert nur einen. Verschmolzen zu einer Aussage wäre der Bericht
-  // feststellend statt diagnostisch.
-  const ebenen = [
-    { name: "Struktur", frage: "Dieselben Feldbezeichnungen?",
-      gleich: (e.tabellen ?? []).every(tb => tb.ta?.struktur === tb.tb?.struktur),
-      folge: "Ein Feld heißt anders, fehlt oder ist neu — das betrifft jeden Datensatz. Alles Weitere ist Folge davon." },
-    { name: "Anordnung", frage: "Dieselbe Aneinanderreihung?",
-      gleich: (e.tabellen ?? []).every(tb => tb.ta?.struktur === tb.tb?.struktur)
-        && (e.tabellen ?? []).every(tb => (tb.ta?.zeilen ?? 0) === (tb.tb?.zeilen ?? 0)),
-      folge: "Die Felder stehen in anderer Folge. Bei einem Schema mit fester Reihenfolge ist das ein Fehler, sonst nur ein Hinweis auf eine andere Erzeugung." },
-    { name: "Satzfolge", frage: "Dieselbe Reihenfolge der Datensätze?",
-      gleich: e.folgeGleich,
-      folge: satzfolgeText(e) },
-    { name: "Ausprägungen", frage: "Dieselben Werte?",
-      gleich: (e.tabellen ?? []).every(tb => !tb.spalten.length && !tb.eimer.length),
-      folge: "Einzelne Werte weichen ab — welche, steht unten." },
-  ];
-
-  t.push(`<div class="rahmen" style="margin-bottom:1rem"><table><thead><tr>
-    <th>Ebene</th><th></th><th></th>
-  </tr></thead><tbody>`);
-  for (const eb of ebenen) {
-    t.push(`<tr>
-      <td><b>${eb.name}</b><div class="hinweis">${eb.frage}</div></td>
-      <td style="width:1%"><span class="marke ${eb.gleich ? "gut" : "schlecht"}">${eb.gleich ? "gleich" : "abweichend"}</span></td>
-      <td class="hinweis">${eb.gleich ? "" : eb.folge}</td>
-    </tr>`);
-  }
-  t.push(`</tbody></table></div>`);
-
-  if (e.a.anordnungen !== e.b.anordnungen) {
-    t.push(`<div class="karte hinweis">Die Quelle kennt ${viele(e.a.anordnungen, "Feldfolge", "Feldfolgen")},
-      das Ziel ${viele(e.b.anordnungen, "Feldfolge", "Feldfolgen")} — die Datensätze sind
-      unterschiedlich einheitlich aufgebaut.</div>`);
-  }
-
-  // Ebene 2 aufgeschlüsselt: Wo genau unterscheidet sich der Aufbau?
-  if (e.a.struktur !== e.b.struktur || e.a.anordnung !== e.b.anordnung) {
-    t.push(strukturTabelle(e));
-  }
-
-  // Unterschiedlich viele Datensätze erklären fast jede weitere Abweichung:
-  // Fehlt ein Datensatz, fehlen zwangsläufig alle seine Felder. Das gehört
-  // nach vorn, sonst sucht jemand fünfzig Fehler statt einem.
-  const mengeAnders = !e.datensaetzeGleich;
-  const d = e.b.datensaetze - e.a.datensaetze;
-
-  const stufe = e.bestanden ? "gut" : e.nurUmsortiert ? "warnung" : "schlecht";
-  const zeichen = e.bestanden ? "✓" : e.nurUmsortiert ? "!" : "✗";
-  const ueberschrift = e.bestanden ? "Übereinstimmung"
-    : e.nurUmsortiert ? "Gleiche Werte, andere Reihenfolge" : "Abweichungen";
-
-  t.push(`<div class="urteil ${stufe}">
-    <span class="zeichen">${zeichen}</span>
-    <span>${ueberschrift}
-      <span class="text">— ${e.bestanden
-        ? "Beide Dateien tragen dieselben Werte in denselben Feldern, in derselben Folge."
-        : e.nurUmsortiert
-          ? "Jeder Satz ist mit denselben Werten vorhanden, aber die Datensätze stehen in anderer Reihenfolge."
-        : mengeAnders
-          ? `${viele(Math.abs(d), "Datensatz", "Datensätze")} ${d < 0 ? "fehlen im Ziel" : "zusätzlich im Ziel"}.`
-          : `${viele(e.spalten.length, "Feld weicht", "Felder weichen")} ab` +
-            ((e.tabellen ?? []).filter(tb => tb.spalten.length || tb.eimer.length).length > 1
-              ? ` in ${viele((e.tabellen ?? []).filter(tb => tb.spalten.length || tb.eimer.length).length, "Tabelle", "Tabellen")}.`
-              : ".")}</span>
-    </span></div>`);
-
-  // Ist die Menge verschieden, ist alles Weitere Folge davon. Dann gehört
-  // hierher, welche Datensätze fehlen — und nicht eine Liste von Feldern, die
-  // zwangsläufig abweichen, weil ihre Datensätze gar nicht da sind.
-  if (mengeAnders) {
-    t.push(fehlendeDatensaetze(e));
-  }
-
-  // Tabellenübersicht — die Zerlegung sichtbar machen.
-  if ((e.tabellen ?? []).length > 1) {
-    t.push(`<h2>Tabellen</h2>
-      <div class="hinweis" style="margin-bottom:.5rem">
-        Jede Wiederholgruppe ist eine eigene Tabelle mit eigenem Schlüssel und
-        eigenem Abdruck — sonst gingen die Einträge einer Gruppe in einem Topf auf.
+  t.push(`<h2>1 · Fingerabdruck</h2>
+    <div class="karte" style="text-align:center">
+      <div style="display:flex;gap:1.5rem;justify-content:center;align-items:center;flex-wrap:wrap;margin:.4rem 0">
+        <code style="font-size:1.15rem;letter-spacing:.04em">${e.a.gesamt}</code>
+        <span style="font-size:1.3rem;color:var(--${gleich ? "gut" : "schlecht"})">${gleich ? "=" : "≠"}</span>
+        <code style="font-size:1.15rem;letter-spacing:.04em">${e.b.gesamt}</code>
       </div>
-      <div class="rahmen" style="margin-bottom:1rem"><table><thead><tr>
-        <th>Tabelle</th><th class="zahl">Zeilen Quelle</th><th class="zahl">Zeilen Ziel</th>
-        <th class="zahl">Felder</th><th></th>
-      </tr></thead><tbody>`);
-    for (const tb of e.tabellen) {
-      const gleich = !tb.spalten.length && !tb.eimer.length && tb.zeilenGleich;
-      const einzug = "&nbsp;".repeat(4 * (tb.ta?.tiefe ?? tb.tb?.tiefe ?? 0));
-      t.push(`<tr>
-        <td class="pfad">${einzug}${tb.name === "" ? "<b>Datensatz</b>" : escape(tb.name)}</td>
-        <td class="zahl">${zahl(tb.ta?.zeilen ?? 0)}</td>
-        <td class="zahl">${zahl(tb.tb?.zeilen ?? 0)}</td>
-        <td class="zahl">${zahl((tb.ta?.spalten ?? tb.tb?.spalten ?? []).length)}</td>
-        <td><span class="marke ${gleich ? "gut" : "schlecht"}">${
-          tb.fehltIn ? "fehlt in der " + tb.fehltIn
-          : gleich ? "gleich"
-          : !tb.zeilenGleich ? "andere Zeilenzahl"
-          : viele(tb.spalten.length, "Feld weicht ab", "Felder weichen ab")}</span></td>
-      </tr>`);
-    }
-    t.push(`</tbody></table></div>`);
-  }
-
-  // Spaltenachse
-  t.push(`<h2>Welches Feld?</h2>`);
-  // Alle abweichenden Felder, aus jeder Tabelle.
-  const alleFelder = e.spalten;
-
-  if (!alleFelder.length) {
-    const gesamtfelder = (e.tabellen ?? []).reduce((n, tb) => n + (tb.ta?.spalten?.length ?? 0), 0);
-    t.push(`<div class="karte"><span class="marke gut">gleich</span>
-      Alle ${zahl(gesamtfelder)} Felder stimmen überein.</div>`);
-  } else if (mengeAnders) {
-    // Zusammengeklappt: bei ungleicher Menge ist die Liste erwartbar lang und
-    // erwartbar wenig aussagekräftig. Wer sie trotzdem sehen will, klappt auf.
-    t.push(`<details class="karte">
-      <summary style="cursor:pointer">
-        ${viele(alleFelder.length, "Feld weicht", "Felder weichen")} ab —
-        <span class="hinweis">Folge der Mengendifferenz, zum Aufklappen</span>
-      </summary>
-      <div style="margin-top:.75rem">${datenTabelle("t-felder", [
-        { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
-        { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
-        { kopf: "Werte Quelle", wert: s => s.a ? s.a[3] : "", zahl: true, klasse: "zahl" },
-        { kopf: "Werte Ziel", wert: s => s.b ? s.b[3] : "", zahl: true, klasse: "zahl" },
-      ], alleFelder, "abweichende_felder.csv")}</div>
-    </details>`);
-  } else {
-    const art = s => s.art === "nur-quelle" ? "fehlt im Ziel"
-      : s.art === "nur-ziel" ? "nur im Ziel" : "Werte abweichend";
-    t.push(datenTabelle("t-felder", [
-      { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
-      { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
-      { kopf: "Werte Quelle", wert: s => s.a ? s.a[3] : "", zahl: true, klasse: "zahl" },
-      { kopf: "Werte Ziel", wert: s => s.b ? s.b[3] : "", zahl: true, klasse: "zahl" },
-      { kopf: "Befund", wert: art,
-        roh: true, csv: art,
-        // Die Marke braucht Auszeichnung; in der CSV steht nur der Text.
-        wert: s => `<span class="marke ${s.art === "abweichend" ? "schlecht" : "warnung"}">${escape(art(s))}</span>` },
-    ], alleFelder, "abweichende_felder.csv"));
-  }
-
-  // Zeilenachse
-  //
-  // Bewusst ohne Auflistung der Eimer: Ihre Nummern sind ein Rechenmittel
-  // dieses Werkzeugs — sie verkleinern den Suchraum — und beantworten die
-  // Frage nicht, die hier steht. Welcher Datensatz betroffen ist, sagen die
-  // Schlüssel im Abschnitt darunter.
-  t.push(`<h2>Welcher Datensatz?</h2>`);
-  if (!schluessel) {
-    t.push(`<div class="karte hinweis">Ohne Schlüsselfeld lässt sich nicht sagen,
-      welche Datensätze betroffen sind — nur welche Felder.</div>`);
-  } else if (!e.eimer.length) {
-    t.push(`<div class="karte"><span class="marke gut">gleich</span>
-      Kein Datensatz weicht ab.</div>`);
-  } else {
-    const proEimer = Math.max(1, Math.round(e.a.datensaetze / EIMER));
-    t.push(`<div class="karte">
-      <b>Die Suche ist auf etwa ${viele(e.eimer.length * proEimer, "Datensatz", "Datensätze")}
-      eingegrenzt</b> statt auf ${zahl(e.a.datensaetze)}.
-      Welche es genau sind, steht unten mit Schlüssel und Wert.
+      <div class="hinweis">${gleich
+        ? "Gleich — eine Abweichung ist damit sehr unwahrscheinlich, aber nicht ausgeschlossen."
+        : "Verschieden. Die Ebenen darunter sagen, worin."}</div>
+      ${(e.a.stimmig === false || e.b.stimmig === false) ? `<div class="hinweis" style="color:var(--schlecht);margin-top:.5rem">
+        <b>Achtung:</b> Spalten- und Zeilenachse ergeben nicht dieselbe Summe. Der Abdruck ist fehlerhaft.
+      </div>` : ""}
     </div>`);
+
+  t.push(`<div class="karte"><div class="paar">
+    ${seite("Quelle", e.dateiA, e.a)}
+    ${seite("Ziel", e.dateiB, e.b)}
+  </div></div>`);
+
+  // ── Ebene 2 ── Feldbezeichnungen: welche Felder gibt es hier und dort.
+  const felderTab = (e.tabellen ?? []).flatMap(tb => [
+    ...(tb.ta?.spalten ?? []).map(s => ({ tabelle: tb.name, pfad: s[0], seite: "beide" })),
+  ]);
+  const strukturUnterschiede = e.spalten.filter(s => s.art !== "abweichend");
+  const strukturGleich = strukturUnterschiede.length === 0;
+
+  t.push(`<h2>2 · Feldbezeichnungen</h2>`);
+  t.push(`<div class="karte">
+    <span class="marke ${strukturGleich ? "gut" : "schlecht"}">${strukturGleich ? "gleich" : "abweichend"}</span>
+    ${strukturGleich
+      ? `Beide Seiten kennen dieselben ${zahl(felderTab.length)} Felder.`
+      : `${viele(strukturUnterschiede.length, "Feld kommt", "Felder kommen")} nur auf einer Seite vor.`}
+  </div>`);
+  t.push(datenTabelle("t-struktur", [
+    { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
+    { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
+    { kopf: "Quelle", wert: s => s.a ? "vorhanden" : "fehlt" },
+    { kopf: "Ziel", wert: s => s.b ? "vorhanden" : "fehlt" },
+  ], strukturUnterschiede.length ? strukturUnterschiede : [], "2_feldbezeichnungen.csv"));
+
+  // ── Ebene 3 ── Anordnung und Satzfolge.
+  const anordnungGleich = e.a.anordnung === e.b.anordnung;
+  const folgeGleich = e.folgeGleich;
+  t.push(`<h2>3 · Anordnung und Reihenfolge</h2>`);
+  t.push(`<div class="karte">
+    <div><span class="marke ${anordnungGleich ? "gut" : "schlecht"}">${anordnungGleich ? "gleich" : "abweichend"}</span>
+      Anordnung der Felder im Datensatz</div>
+    <div style="margin-top:.5rem"><span class="marke ${folgeGleich ? "gut" : "schlecht"}">${folgeGleich ? "gleich" : "abweichend"}</span>
+      Reihenfolge der Datensätze${!folgeGleich ? " — " + satzfolgeText(e) : ""}</div>
+  </div>`);
+  if (!anordnungGleich) t.push(strukturTabelle(e));
+
+  // Die Satzfolge als Liste: welcher Datensatz steht an welcher Stelle.
+  const a = e.a.ersteSchluessel ?? [], b = e.b.ersteSchluessel ?? [];
+  const folgeZeilen = [];
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    if (a[i] !== b[i]) folgeZeilen.push({ nr: i + 1, a: a[i] ?? "—", b: b[i] ?? "—" });
   }
+  t.push(datenTabelle("t-folge", [
+    { kopf: "Stelle", wert: z => z.nr, zahl: true, klasse: "zahl" },
+    { kopf: "Quelle", wert: z => z.a, klasse: "pfad" },
+    { kopf: "Ziel", wert: z => z.b, klasse: "pfad" },
+  ], folgeZeilen, "3_reihenfolge.csv"));
+
+  // ── Ebene 4 ── Ausprägungen: welche Werte weichen ab.
+  const werteFelder = e.spalten.filter(s => s.art === "abweichend");
+  const werteGleich = werteFelder.length === 0 && !e.eimer.length;
+  t.push(`<h2>4 · Ausprägungen</h2>`);
+  t.push(`<div class="karte">
+    <span class="marke ${werteGleich ? "gut" : "schlecht"}">${werteGleich ? "gleich" : "abweichend"}</span>
+    ${werteGleich ? "Alle Werte stimmen überein."
+      : `In ${viele(werteFelder.length, "Feld", "Feldern")} weichen Werte ab.`}
+    ${e.a.datensaetze !== e.b.datensaetze
+      ? ` <b>${zahl(e.a.datensaetze)} Datensätze in der Quelle, ${zahl(e.b.datensaetze)} im Ziel</b>
+          — fehlende Datensätze bringen fehlende Werte mit.` : ""}
+  </div>`);
+  t.push(datenTabelle("t-felder", [
+    { kopf: "Tabelle", wert: s => s.tabelle || "(Datensatz)" },
+    { kopf: "Feld", wert: s => s.pfad, klasse: "pfad" },
+    { kopf: "Werte Quelle", wert: s => s.a ? s.a[3] : 0, zahl: true, klasse: "zahl" },
+    { kopf: "Werte Ziel", wert: s => s.b ? s.b[3] : 0, zahl: true, klasse: "zahl" },
+  ], werteFelder, "4_felder_mit_abweichung.csv"));
+
+  // Die einzelnen Werte kommen aus dem zweiten Durchlauf und werden hier
+  // nachgereicht.
+  t.push(`<div id="werte-platz"></div>`);
+
+  if (e.a.datensaetze !== e.b.datensaetze) t.push(fehlendeDatensaetze(e));
 
   t.push(`<h2>Nicht geprüft</h2><div class="karte"><ul class="grenzen">
     <li>Die Prüfwerte schützen vor Versehen, nicht vor absichtlicher Veränderung —
@@ -1055,10 +974,7 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
     <li>Entitäten (<code>&amp;amp;</code> und dergleichen) werden nicht aufgelöst,
         sondern verglichen wie sie dastehen.</li>
     <li>Ab dem 65. gleichnamigen Feld einer Zeile werden die weiteren zusammengefasst
-        (<code>FELD[…]</code>) — dort zählt die Position dann nicht mehr einzeln.</li>
-    ${e.a.ohneSchluessel || e.b.ohneSchluessel
-      ? `<li><b>${zahl(e.a.ohneSchluessel)} bzw. ${zahl(e.b.ohneSchluessel)} Datensätze ohne Schlüsselwert</b> —
-         für sie gilt die Zeilenachse nicht.</li>` : ""}
+        (<code>FELD[…]</code>).</li>
   </ul></div>`);
 
   (ziel ?? $("ergebnis")).innerHTML = t.join("");

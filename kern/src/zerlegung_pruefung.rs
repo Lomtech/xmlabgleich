@@ -325,3 +325,17 @@ fn dok(saetze: &[&str]) -> String {
 fn satz_mit(id: &str) -> String {
     format!("<INVESTMENT><ID>{id}</ID><TYP>BOND</TYP><BETRAG>1.00</BETRAG></INVESTMENT>")
 }
+
+/// Die Selbstkontrolle muss bei gesunden Daten anschlagsfrei sein — sonst
+/// warnt das Werkzeug bei jedem Lauf vor sich selbst.
+#[test]
+fn selbstkontrolle_stimmt_bei_gesunden_daten() {
+    let x = "<INVESTMENTS>\
+        <INVESTMENT><ID>A1</ID><TYP>BOND</TYP><KENNUNGEN>\
+          <KENNUNG><ART>ISIN</ART></KENNUNG><KENNUNG><ART>WKN</ART></KENNUNG>\
+        </KENNUNGEN></INVESTMENT>\
+        <INVESTMENT><ID>A2</ID><TYP>EQUITY</TYP><KENNUNGEN>\
+          <KENNUNG><ART>ISIN</ART></KENNUNG>\
+        </KENNUNGEN></INVESTMENT></INVESTMENTS>";
+    assert!(zerlege(x, 9).stimmig(), "beide Achsen müssen dieselbe Summe ergeben");
+}
