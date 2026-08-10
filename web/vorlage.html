@@ -293,11 +293,14 @@ async function erkunden(datei) {
     $("schluessel-hinweis").textContent =
       "Kein Feld kommt in jedem Datensatz genau einmal vor. Ohne Schlüssel bleibt nur die Spaltenachse.";
   } else {
+    // Bei einem einzigen Datensatz ist jedes Feld rechnerisch eindeutig.
+    // Ein Häkchen behauptete dort eine Sicherheit, die die Zahl nicht deckt.
+    const beurteilbar = (erkundung.datensaetze ?? 0) > 1;
     for (const kand of k) {
       const o = document.createElement("option");
       o.value = kand.feld;
       const gut = kand.verschieden >= erkundung.datensaetze;
-      o.textContent = `${gut ? "✓" : "✗"} ${kand.feld} — ${zahl(kand.verschieden)} verschiedene Werte`;
+      o.textContent = `${beurteilbar ? (gut ? "✓" : "✗") : "?"} ${kand.feld} — ${zahl(kand.verschieden)} verschiedene Werte`;
       wahl.append(o);
     }
     // Der Hinweis muss dem gewählten Feld folgen, nicht dem bestplatzierten:
@@ -306,6 +309,15 @@ async function erkunden(datei) {
       const kand = k.find(x => x.feld === wahl.value) ?? k[0];
       const eindeutig = kand.verschieden >= erkundung.datensaetze;
       const h = $("schluessel-hinweis");
+      if (!beurteilbar) {
+        h.style.color = "";
+        h.textContent = `Die Datei enthält nur ${zahl(erkundung.datensaetze)} Datensatz — `
+          + `damit lässt sich nicht messen, ob ${kand.feld} ihn eindeutig benennt. `
+          + `Wählen Sie ein Feld, das die Identität trägt (eine Kennung), keine `
+          + `Eigenschaft, die sich zwischen den Ständen ändern kann: Ändert sich der `
+          + `Schlüssel selbst, gilt der Datensatz als verschwunden statt als geändert.`;
+        return;
+      }
       h.style.color = eindeutig ? "" : "var(--schlecht)";
       h.textContent = eindeutig
         ? `${kand.feld} ist eindeutig: ${zahl(kand.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen.`

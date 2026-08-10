@@ -27,6 +27,12 @@ pub struct Vorkommen {
     pub verschiedene: usize,
     /// Ist der Pfad ein Blatt (trägt Werte) oder nur Struktur?
     pub blatt: bool,
+    /// Der Elternteil enthält ausschließlich gleichnamige Kinder — er ist
+    /// ein reiner Sammelcontainer (`INVESTMENTS` → `INVESTMENT`).
+    pub nur_kind: bool,
+    /// Wie viele verschiedene Kindnamen dieses Element trägt. Ein Datensatz
+    /// hat Felder (mehrere Namen); eine Durchgangsstation hat einen.
+    pub kindnamen: usize,
 }
 
 /// Über so viele verschiedene Werte hinaus wird nicht mehr gezählt. Für die
@@ -85,16 +91,42 @@ impl Erkundung {
     /// Vorschlag für das Datensatz-Element: das mit den meisten
     /// gleichnamigen Geschwistern, bei Gleichstand das flachere. Genau die
     /// Wahl, die ein Mensch beim Blick auf die Datei träfe.
+    ///
+    /// Diese Wahl allein versagt aber, sobald eine Datei nur **einen**
+    /// Datensatz enthält: Dann schlägt jede Wiederholgruppe darin den
+    /// Datensatz. Gemessen an einer echten Einzelsatz-Datei kam
+    /// `INVESTMENTCLASSIFICATION` siebenmal vor, `INVESTMENT` einmal — das
+    /// Werkzeug hätte die Klassifizierungen abgeglichen und den Datensatz,
+    /// um den es geht, nie angesehen.
+    ///
+    /// Darum zuerst die Bauform: Liegt ein Element unter einem reinen
+    /// Sammelcontainer und trägt selbst mehrere verschiedene Kindnamen —
+    /// hat also Felder statt nur einer Fortsetzung —, und liegt es *flacher*
+    /// als der Vielgeschwister-Kandidat, dann ist es der Datensatz. Bei
+    /// gleicher Tiefe behält die Geschwisterzahl das letzte Wort.
     pub fn datensatz_vorschlag(&self) -> Option<(Vec<u8>, u64)> {
-        self.pfade
+        let nach_geschwistern = self
+            .pfade
             .iter()
             .filter(|(_, v)| !v.blatt && v.geschwister > 1)
             .max_by(|a, b| {
                 a.1.geschwister
                     .cmp(&b.1.geschwister)
                     .then_with(|| b.1.tiefe.cmp(&a.1.tiefe))
-            })
-            .map(|(p, v)| (p.clone(), v.anzahl))
+            });
+
+        let nach_bauform = self
+            .pfade
+            .iter()
+            .filter(|(_, v)| !v.blatt && v.nur_kind && v.kindnamen > 1)
+            .min_by(|a, b| a.1.tiefe.cmp(&b.1.tiefe).then_with(|| a.0.cmp(b.0)));
+
+        let wahl = match (nach_bauform, nach_geschwistern) {
+            (Some(b), Some(g)) if b.1.tiefe < g.1.tiefe => b,
+            (_, Some(g)) => g,
+            (b, None) => b?,
+        };
+        Some((wahl.0.clone(), wahl.1.anzahl))
     }
 
     /// Elemente innerhalb des Datensatzes, die mehrfach nebeneinander
@@ -191,6 +223,36 @@ impl Beobachter for Erkundung {
     }
 
     fn element_ende(&mut self) {
+        // Enthält dieses Element nur gleichnamige Kinder, ist es ein reiner
+        // Sammelcontainer und sein Kind ein Datensatz-Kandidat. Die Wurzel-
+        // ebene wird nie geschlossen, das Dokumentelement fällt darum von
+        // selbst heraus.
+        let (kindnamen, einziger) = {
+            let k = self.kinder.last().expect("Ebene fehlt");
+            (
+                k.len(),
+                if k.len() == 1 {
+                    k.keys().next().cloned()
+                } else {
+                    None
+                },
+            )
+        };
+        let hier = self.voller_pfad();
+        if let Some(e) = self.pfade.get_mut(&hier) {
+            if kindnamen > e.kindnamen {
+                e.kindnamen = kindnamen;
+            }
+        }
+        if let Some(name) = einziger {
+            let mut kindpfad = hier.clone();
+            kindpfad.push(b'/');
+            kindpfad.extend_from_slice(&name);
+            if let Some(e) = self.pfade.get_mut(&kindpfad) {
+                e.nur_kind = true;
+            }
+        }
+
         let ist_blatt = !*self.hat_kinder.last().unwrap_or(&false);
         if ist_blatt {
             let p = self.voller_pfad();
@@ -291,6 +353,52 @@ mod tests {
         let (pfad, n) = e.datensatz_vorschlag().unwrap();
         assert_eq!(String::from_utf8_lossy(&pfad), "WURZEL/LISTE/POSTEN");
         assert_eq!(n, 50);
+    }
+
+    /// Der Fall aus den Einzelsatz-Dateien: Genau ein Datensatz, aber
+    /// Wiederholgruppen darin. Nach Geschwisterzahl gewählt, hätte das
+    /// Werkzeug die Klassifizierungen abgeglichen statt des Investments.
+    #[test]
+    fn einzelner_datensatz_wird_nicht_von_seinen_gruppen_verdraengt() {
+        let mut x = String::from("<STAMM><KOPF><NR>1</NR></KOPF><POSTEN><P>");
+        x.push_str("<KENNUNGEN>");
+        for i in 0..5 {
+            x.push_str(&format!("<KENNUNG><SYS>S{i}</SYS><WERT>{i}</WERT></KENNUNG>"));
+        }
+        x.push_str("</KENNUNGEN><KLASSEN>");
+        for i in 0..7 {
+            x.push_str(&format!("<KLASSE><ART>A{i}</ART><WERT>{i}</WERT></KLASSE>"));
+        }
+        x.push_str("</KLASSEN><ALLGEMEIN><NAME>x</NAME></ALLGEMEIN></P></POSTEN></STAMM>");
+
+        let e = erkunde(&x);
+        // KLASSE steht zu sieben nebeneinander, P nur ein einziges Mal …
+        assert_eq!(e.pfade[b"STAMM/POSTEN/P/KLASSEN/KLASSE".as_slice()].geschwister, 7);
+        assert_eq!(e.pfade[b"STAMM/POSTEN/P".as_slice()].geschwister, 1);
+        // … trotzdem ist P der Datensatz: Es liegt unter einem reinen
+        // Sammelcontainer und trägt eigene Felder.
+        let (pfad, n) = e.datensatz_vorschlag().unwrap();
+        assert_eq!(String::from_utf8_lossy(&pfad), "STAMM/POSTEN/P");
+        assert_eq!(n, 1);
+    }
+
+    /// Gegenprobe: Sobald der Datensatz wiederholt vorkommt, bleibt die
+    /// Geschwisterzahl maßgeblich — die Bauform darf sie nicht überstimmen,
+    /// wenn beide auf dieselbe Ebene zeigen.
+    #[test]
+    fn viele_datensaetze_bleiben_bei_der_geschwisterzahl() {
+        let mut x = String::from("<STAMM><POSTEN>");
+        for i in 0..20 {
+            x.push_str(&format!(
+                "<P><KENNUNGEN><KENNUNG><SYS>S</SYS><WERT>{i}</WERT></KENNUNG>\
+                 <KENNUNG><SYS>T</SYS><WERT>{i}</WERT></KENNUNG></KENNUNGEN>\
+                 <NAME>n{i}</NAME></P>"
+            ));
+        }
+        x.push_str("</POSTEN></STAMM>");
+        let (pfad, n) = erkunde(&x).datensatz_vorschlag().unwrap();
+        assert_eq!(String::from_utf8_lossy(&pfad), "STAMM/POSTEN/P");
+        assert_eq!(n, 20);
     }
 
     #[test]
