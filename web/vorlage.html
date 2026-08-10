@@ -296,14 +296,23 @@ async function erkunden(datei) {
     for (const kand of k) {
       const o = document.createElement("option");
       o.value = kand.feld;
-      o.textContent = `${kand.feld} — ${zahl(kand.verschieden)} verschiedene Werte`;
+      const gut = kand.verschieden >= erkundung.datensaetze;
+      o.textContent = `${gut ? "✓" : "✗"} ${kand.feld} — ${zahl(kand.verschieden)} verschiedene Werte`;
       wahl.append(o);
     }
-    const bester = k[0];
-    const eindeutig = bester.verschieden >= erkundung.datensaetze;
-    $("schluessel-hinweis").textContent = eindeutig
-      ? `${bester.feld} ist eindeutig: ${zahl(bester.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen.`
-      : `Achtung: ${bester.feld} hat nur ${zahl(bester.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen — mehrere Datensätze fallen damit zusammen.`;
+    // Der Hinweis muss dem gewählten Feld folgen, nicht dem bestplatzierten:
+    // Sonst steht unter einer schlechten Wahl weiter die gute Auskunft.
+    const zeigeGuete = () => {
+      const kand = k.find(x => x.feld === wahl.value) ?? k[0];
+      const eindeutig = kand.verschieden >= erkundung.datensaetze;
+      const h = $("schluessel-hinweis");
+      h.style.color = eindeutig ? "" : "var(--schlecht)";
+      h.textContent = eindeutig
+        ? `${kand.feld} ist eindeutig: ${zahl(kand.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen.`
+        : `${kand.feld} taugt nicht als Schlüssel: nur ${zahl(kand.verschieden)} verschiedene Werte bei ${zahl(erkundung.datensaetze)} Datensätzen. Mehrere Datensätze fallen zusammen, der Abgleich sagt dann nichts aus.`;
+    };
+    wahl.onchange = () => { zeigeGuete(); standSpeichern(); };
+    zeigeGuete();
   }
   $("starten").disabled = !(dateien.a && dateien.b);
   standSpeichern();
@@ -516,43 +525,6 @@ function zeigeGemerkteEinzelheiten(gemerkt, ziel) {
  * zehn Datensätzen fehlen, weicht zwangsläufig jedes Feld ab — diese Liste
  * abzuarbeiten führt nirgendwohin. Welche Sätze es sind, führt weiter.
  */
-function fehlendeDatensaetze(e) {
-  const a = e.a.ersteSchluessel ?? [], b = e.b.ersteSchluessel ?? [];
-  const inA = new Set(a), inB = new Set(b);
-  const nurQuelle = a.filter(k => !inB.has(k));
-  const nurZiel = b.filter(k => !inA.has(k));
-  const d = e.b.datensaetze - e.a.datensaetze;
-  // Die Klartextliste ist gedeckelt; ist sie voll, kann sie unvollständig sein.
-  const unvollstaendig = a.length >= 50000 || b.length >= 50000;
-
-  const zeilen = [
-    ...nurQuelle.map(k => ({ schluessel: k, wo: "fehlt im Ziel" })),
-    ...nurZiel.map(k => ({ schluessel: k, wo: "nur im Ziel" })),
-  ];
-  const gemeinsam = a.filter(k => inB.has(k)).length;
-
-  // Ohne gemeinsame Datensätze ist jeder weitere Vergleich sinnlos — dann
-  // stehen sich zwei Bestände gegenüber, die nichts miteinander zu tun haben.
-  // Das ist die Auskunft, und keine Liste von 59 Feldern.
-  return `<div class="karte" style="border-color:var(--schlecht)">
-      <b>${zahl(e.a.datensaetze)} Datensätze in der Quelle, ${zahl(e.b.datensaetze)} im Ziel.</b>
-      ${gemeinsam ? `${zahl(gemeinsam)} kommen in beiden vor.` : ""}
-      <div class="hinweis" style="margin-top:.4rem">
-        Damit weicht zwangsläufig fast jedes Feld ab: Die Werte fehlender Datensätze
-        fehlen mit. Die Feldliste weiter unten sagt hier wenig — was zählt, ist
-        welche Datensätze es sind.
-        ${unvollstaendig ? "<b>Die Schlüsselliste ist gedeckelt; es können mehr sein.</b>" : ""}
-      </div>
-    </div>` +
-    (zeilen.length
-      ? datenTabelle("t-fehlend", [
-          { kopf: "Datensatz", wert: z => z.schluessel, klasse: "pfad" },
-          { kopf: "", wert: z => z.wo },
-        ], zeilen, "4_fehlende_datensaetze.csv")
-      : `<div class="karte hinweis">Die Schlüssel selbst ließen sich nicht
-         gegenüberstellen — vermutlich ist das gewählte Schlüsselfeld nicht eindeutig.</div>`);
-}
-
 /**
  * Fasst zusammen, welche Datensätze betroffen sind.
  *
@@ -932,7 +904,43 @@ function befundListe(e, einzelheiten) {
     });
   }
 
+  // Geänderte Werte nach oben. Beim Abgleich eines Teilbestands gegen den
+  // Gesamtbestand sind fehlende Sätze die Erwartung — die zwei geänderten
+  // Werte hinter 267 erwarteten Lücken auf Seite 6 findet dagegen niemand.
+  const RANG = art => art.startsWith("Wert") ? 0 : 1;
+  befunde.sort((x, y) => RANG(x.art) - RANG(y.art));
+
   return befunde;
+}
+
+/**
+ * Datensätze ohne Schlüssel sind nicht wiedererkennbar. Sind es alle, ist der
+ * ganze Abgleich wertlos — dann darf hier nicht „kein Unterschied" stehen,
+ * sondern muss der Grund stehen. Der Kern zählt das seit jeher mit; gesagt
+ * wurde es bis hierher nicht.
+ */
+function ohneSchluesselHinweis(e) {
+  const oa = e.a.ohneSchluessel ?? 0, ob = e.b.ohneSchluessel ?? 0;
+  if (!oa && !ob) return "";
+  const alle = oa >= (e.a.datensaetze ?? 0) && ob >= (e.b.datensaetze ?? 0);
+  const feld = $("schluessel").value || "das gewählte Schlüsselfeld";
+  return `<div class="hinweis" style="color:var(--schlecht);margin-top:.5rem">
+    ${alle
+      ? `<b>Der Abgleich sagt so nichts aus.</b> In <i>keinem</i> Datensatz wurde
+         <code>${escape(feld)}</code> gefunden — alle Datensätze bekommen denselben
+         leeren Schlüssel und gelten damit als gleich. Meist liegt das Feld in einer
+         Wiederholgruppe: dann unten eine Untertabelle dafür anlegen oder ein Feld
+         wählen, das direkt im Datensatz steht.`
+      : `${zahl(oa)} Datensätze der Quelle und ${zahl(ob)} des Ziels haben kein
+         vollständiges <code>${escape(feld)}</code>. Sie sind nicht wiedererkennbar und
+         werden hilfsweise nach ihrer Position verglichen — verschiebt sich die
+         Reihenfolge, meldet das Werkzeug dort Unterschiede, die keine sind.`}
+  </div>`;
+}
+
+/** Steht das Nachlesen der Einzelwerte noch aus? */
+function nochOffenPruefen(e) {
+  return e.spalten.some(s => s.art === "abweichend");
 }
 
 function feldName(s) {
@@ -949,15 +957,70 @@ function zeigeBefunde(e, einzelheiten) {
   const nachArt = new Map();
   for (const bf of befunde) nachArt.set(bf.art, (nachArt.get(bf.art) ?? 0) + 1);
 
+  // Wie viele Datensätze haben beide Dateien überhaupt gemeinsam? Das ist
+  // der Rahmen für alles Weitere. Bei einem Update gegen einen Gesamtbestand
+  // lautet die Frage nicht „welche fehlen", sondern „was hat sich bei den
+  // gemeinsamen geändert" — die Zahlen müssen das zeigen.
+  const sa = e.a.ersteSchluessel ?? [], sb = e.b.ersteSchluessel ?? [];
+  const zielMenge = new Set(sb), quellMenge = new Set(sa);
+
+  // Ein Schlüssel, der mehrfach vorkommt, ordnet Datensätze einander falsch
+  // zu: Jede Zahl unten wäre dann erfunden. Also erst prüfen, dann rechnen.
+  const mehrfachQ = sa.length - quellMenge.size, mehrfachZ = sb.length - zielMenge.size;
+  if (mehrfachQ || mehrfachZ) {
+    platz.innerHTML = `<div class="karte">
+      <span class="marke schlecht">unbrauchbarer Schlüssel</span>
+      <p>Das gewählte Schlüsselfeld <code>${escape($("schluessel").value)}</code> ist nicht
+      eindeutig: In der Quelle teilen sich ${zahl(sa.length)} Datensätze nur
+      ${zahl(quellMenge.size)} verschiedene Werte${mehrfachZ
+        ? `, im Ziel ${zahl(sb.length)} Datensätze nur ${zahl(zielMenge.size)}` : ""}.</p>
+      <p>Damit lässt sich kein Datensatz wiedererkennen, und jede Zahl wäre geraten —
+      deshalb steht hier keine. Ein Schlüssel muss je Datensatz genau einmal vorkommen.
+      Liegt das Feld in einer Wiederholgruppe (mehrere Kennungen je Datensatz), oben eine
+      Untertabelle dafür anlegen; sonst ein Feld wählen, das den Datensatz eindeutig
+      benennt.</p></div>`;
+    return;
+  }
+
+  const gemeinsame = sa.filter(k => zielMenge.has(k));
+  const nurQ = sa.filter(k => !zielMenge.has(k)).length;
+  const nurZ = sb.filter(k => !quellMenge.has(k)).length;
+
+  const geaenderteSaetze = new Set(
+    befunde.filter(bf => bf.art.startsWith("Wert"))
+           .map(bf => String(bf.datensatz).split("#")[0]));
+
+  const rahmen = `<div class="karte">
+      <table style="margin:0">
+        <tr><td><b>${zahl(gemeinsame.length)}</b> Datensätze in beiden Dateien</td>
+            <td class="zahl">${gemeinsame.length
+              ? (geaenderteSaetze.size
+                  ? `<span class="marke schlecht">${zahl(geaenderteSaetze.size)} davon geändert</span>`
+                  : (nochOffenPruefen(e) ? `<span class="hinweis">wird geprüft …</span>`
+                                         : `<span class="marke gut">alle gleich</span>`))
+              : ""}</td></tr>
+        <tr><td>${zahl(nurQ)} nur in der Quelle</td><td class="zahl hinweis">
+            ${nurQ ? "im Ziel nicht enthalten" : ""}</td></tr>
+        <tr><td>${zahl(nurZ)} nur im Ziel</td><td class="zahl hinweis">
+            ${nurZ ? "in der Quelle nicht enthalten" : ""}</td></tr>
+      </table>
+      ${ohneSchluesselHinweis(e)}
+      ${(e.a.schluesselGekappt || e.b.schluesselGekappt) ? `
+        <div class="hinweis" style="color:var(--schlecht);margin-top:.5rem">
+          Mehr als ${zahl(1000000)} Datensätze — ab dort sind die Schlüssel nicht mehr
+          einzeln gemerkt. Die Zahlen oben zählen nur die gemerkten; die Fingerabdrücke
+          unten prüfen weiterhin alles.</div>` : ""}
+    </div>`;
+
   if (!befunde.length) {
-    platz.innerHTML = `<div class="karte"><span class="marke gut">gleich</span>
+    platz.innerHTML = rahmen + `<div class="karte"><span class="marke gut">gleich</span>
       Kein Unterschied gefunden.</div>`;
     return;
   }
 
   const nochOffen = !einzelheiten && e.spalten.some(s => s.art === "abweichend");
 
-  platz.innerHTML = `
+  platz.innerHTML = rahmen + `
     <div class="karte">
       ${[...nachArt.entries()].map(([art, n]) =>
         `<div style="margin:.15rem 0"><b>${zahl(n)}</b> × ${escape(art)}</div>`).join("")}
@@ -1126,8 +1189,6 @@ function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   // Die einzelnen Werte kommen aus dem zweiten Durchlauf und werden hier
   // nachgereicht.
   t.push(`<div id="werte-platz"></div>`);
-
-  if (e.a.datensaetze !== e.b.datensaetze) t.push(fehlendeDatensaetze(e));
 
   t.push(`</div></details>`);
 
@@ -1347,7 +1408,19 @@ function schlank(bericht) {
 
 function standSpeichern(zusatz = {}) {
   try {
-    if (zusatz.bericht) zusatz = { ...zusatz, bericht: schlank(zusatz.bericht) };
+    if (zusatz.bericht !== undefined || zusatz.einzelheiten !== undefined) {
+      const gross = {};
+      if (zusatz.bericht !== undefined) gross.bericht = schlank(zusatz.bericht);
+      if (zusatz.einzelheiten !== undefined) gross.einzelheiten = zusatz.einzelheiten;
+      const { bericht, einzelheiten, ...klein } = zusatz;
+      zusatz = { ...klein, imLager: true };
+      // Kein await: Der Aufrufer soll nicht warten. Scheitert es, sagt es der
+      // Nutzer erfährt es beim nächsten Laden — nicht nur die Konsole.
+      grossMerken("stand", gross).catch(e => {
+        console.warn("Bericht nicht merkbar:", e);
+        localStorage.setItem(SCHLUESSEL_STAND + ":fehler", String(e?.message ?? e));
+      });
+    }
     const stand = {
       zeit: Date.now(),
       datensatz: $("datensatz").value,
@@ -1376,8 +1449,11 @@ function standLesen() {
 
 function db() {
   return new Promise((ok, fehler) => {
-    const a = indexedDB.open(LAGER, 1);
-    a.onupgradeneeded = () => a.result.createObjectStore("verweise");
+    const a = indexedDB.open(LAGER, 2);
+    a.onupgradeneeded = () => {
+      if (!a.result.objectStoreNames.contains("verweise")) a.result.createObjectStore("verweise");
+      if (!a.result.objectStoreNames.contains("berichte")) a.result.createObjectStore("berichte");
+    };
     a.onsuccess = () => ok(a.result);
     a.onerror = () => fehler(a.error);
   });
@@ -1407,12 +1483,35 @@ async function verweisHolen(seite) {
   } catch { return null }
 }
 
+/** Bericht und Einzelheiten: zu groß für localStorage, also ins Lager. */
+async function grossMerken(name, wert) {
+  const d = await db();
+  await new Promise((ok, fehler) => {
+    const t = d.transaction("berichte", "readwrite");
+    t.objectStore("berichte").put(wert, name);
+    t.oncomplete = ok; t.onerror = () => fehler(t.error);
+  });
+}
+
+async function grossHolen(name) {
+  try {
+    const d = await db();
+    return await new Promise((ok, fehler) => {
+      const t = d.transaction("berichte", "readonly");
+      const a = t.objectStore("berichte").get(name);
+      a.onsuccess = () => ok(a.result ?? null);
+      a.onerror = () => fehler(a.error);
+    });
+  } catch { return null }
+}
+
 async function vergessen() {
   localStorage.removeItem(SCHLUESSEL_STAND);
   try {
     const d = await db();
-    const t = d.transaction("verweise", "readwrite");
+    const t = d.transaction(["verweise", "berichte"], "readwrite");
     t.objectStore("verweise").clear();
+    t.objectStore("berichte").clear();
   } catch {}
   location.reload();
 }
@@ -1435,6 +1534,25 @@ async function ueberDialog(seite) {
 async function wiederherstellen() {
   const stand = standLesen();
   if (!stand) return;
+
+  // Was beim letzten Mal nicht in den Speicher passte, gehört gesagt —
+  // sonst ist der Bericht einfach weg und niemand weiß warum.
+  const speicherFehler = localStorage.getItem(SCHLUESSEL_STAND + ":fehler");
+  if (speicherFehler) {
+    localStorage.removeItem(SCHLUESSEL_STAND + ":fehler");
+    $("ergebnis").insertAdjacentHTML("afterbegin", `<div class="karte">
+      <span class="marke schlecht">nicht gemerkt</span> Der letzte Bericht war zu groß
+      für den Browser-Speicher (${escape(speicherFehler)}). Bitte neu vergleichen.</div>`);
+  }
+
+  // Bericht und Einzelheiten liegen im Lager, nicht im kleinen Speicher.
+  if (stand.imLager) {
+    const gross = await grossHolen("stand");
+    if (gross) {
+      if (gross.bericht !== undefined) stand.bericht = gross.bericht;
+      if (gross.einzelheiten !== undefined) stand.einzelheiten = gross.einzelheiten;
+    }
+  }
 
   // Einstellungen zuerst — sie gelten auch ohne Dateien.
   if (stand.kandidaten?.length) {

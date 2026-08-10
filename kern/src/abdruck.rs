@@ -28,10 +28,13 @@ const FNV_PRIM: u32 = 16777619;
 /// der Abdruck soll unabhängig von der Dateigröße klein bleiben.
 const ANORDNUNGEN_HOECHSTENS: usize = 1000;
 
-/// So viele Schlüssel werden im Klartext gemerkt, um die erste
-/// Abweichung in der Satzfolge benennen zu können. Mehr braucht es nicht:
-/// Wer die erste Stelle kennt, findet den Rest selbst.
-const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 5000;
+/// So viele Schlüssel werden im Klartext gemerkt. Sie sind die Grundlage
+/// dafür, jeden fehlenden Datensatz beim Namen zu nennen — nicht nur den
+/// ersten. Die Grenze ist Speicher, nicht Absicht: eine Million Schlüssel
+/// à 40 Byte sind 40 MB, das trägt der Browser noch. Wird sie erreicht,
+/// meldet `schluessel_gekappt` das, damit keine Zahl entsteht, die eine
+/// Vollständigkeit vorgibt, die sie nicht hat.
+const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 1_000_000;
 
 #[inline]
 fn fnv_weiter(h: u32, daten: &[u8]) -> u32 {
@@ -129,6 +132,8 @@ pub struct Abdruck {
     /// Die ersten Schlüssel im Klartext, um die erste Abweichung benennen zu
     /// können statt nur „irgendwo anders sortiert".
     pub erste_schluessel: Vec<Vec<u8>>,
+    /// Wahr, sobald die Schlüsselliste die Grenze erreicht hat.
+    pub schluessel_gekappt: bool,
 
     // ---- Ergebnis
     pub spalten: HashMap<Vec<u8>, Aggregat>,
@@ -304,6 +309,7 @@ impl Abdruck {
             anordnungen: HashMap::new(),
             satzfolge: FNV_ANFANG,
             erste_schluessel: Vec::new(),
+            schluessel_gekappt: false,
             spalten: HashMap::new(),
             zeilen: vec![Aggregat::default(); eimer.max(1)],
             datensaetze: 0,
@@ -361,6 +367,8 @@ impl Abdruck {
         self.satzfolge = fnv_weiter(self.satzfolge, b"\x1e");
         if self.erste_schluessel.len() < ERSTE_SCHLUESSEL_HOECHSTENS {
             self.erste_schluessel.push(schluessel_text);
+        } else {
+            self.schluessel_gekappt = true;
         }
 
         // Neue Folgen nur bis zur Grenze aufnehmen; bekannte immer zählen.

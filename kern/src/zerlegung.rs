@@ -42,6 +42,8 @@ pub struct Zerlegung {
     pub ohne_schluessel: u64,
     satzfolge: u32,
     pub erste_schluessel: Vec<Vec<u8>>,
+    /// Wahr, sobald die Schlüsselliste die Grenze erreicht hat.
+    pub schluessel_gekappt: bool,
 }
 
 /// So viele Schlüssel werden im Klartext gemerkt.
@@ -50,7 +52,7 @@ pub struct Zerlegung {
 /// fehlen — die nützlichste Auskunft, wenn zwei Bestände verschieden groß
 /// sind. Bei 50.000 Schlüsseln zu 20 Zeichen sind das rund 1 MB; darüber
 /// hinaus sagt der Bericht, dass die Liste unvollständig ist.
-const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 50_000;
+const ERSTE_SCHLUESSEL_HOECHSTENS: usize = 1_000_000;
 const ANORDNUNGEN_HOECHSTENS: usize = 1000;
 
 impl Zerlegung {
@@ -87,6 +89,7 @@ impl Zerlegung {
             ohne_schluessel: 0,
             satzfolge: FNV_ANFANG,
             erste_schluessel: Vec::new(),
+            schluessel_gekappt: false,
         }
     }
 
@@ -204,6 +207,9 @@ impl Zerlegung {
         }
         self.satzfolge = fnv_weiter(self.satzfolge, &schluessel);
         self.satzfolge = fnv_weiter(self.satzfolge, b"\x1e");
+        if self.erste_schluessel.len() >= ERSTE_SCHLUESSEL_HOECHSTENS {
+            self.schluessel_gekappt = true;
+        }
         if self.erste_schluessel.len() < ERSTE_SCHLUESSEL_HOECHSTENS {
             self.erste_schluessel.push(schluessel.clone());
         }

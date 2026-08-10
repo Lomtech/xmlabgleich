@@ -316,13 +316,15 @@ pub extern "C" fn abdruck_fertig() {
     j.push(']');
 
     j.push_str(",\"ersteSchluessel\":[");
-    for (i, s) in a.erste_schluessel.iter().take(5000).enumerate() {
+    for (i, s) in a.erste_schluessel.iter().enumerate() {
         if i > 0 {
             j.push(',');
         }
         json_text(s, &mut j);
     }
     j.push(']');
+    j.push_str(",\"schluesselGekappt\":");
+    j.push_str(if a.schluessel_gekappt { "true" } else { "false" });
     j.push_str(",\"datensaetze\":");
     j.push_str(&a.datensaetze.to_string());
     j.push_str(",\"blaetter\":");
@@ -595,7 +597,9 @@ pub extern "C" fn zerlegung_fertig() {
         }
         j.push_str(std::str::from_utf8(teil).unwrap_or(""));
     }
-    j.push_str("\",\"stimmig\":");
+    j.push_str("\",\"schluesselGekappt\":");
+    j.push_str(if z.schluessel_gekappt { "true" } else { "false" });
+    j.push_str(",\"stimmig\":");
     j.push_str(if z.stimmig() { "true" } else { "false" });
     j.push_str(",\"datensaetze\":");
     j.push_str(&z.datensaetze.to_string());
@@ -603,7 +607,7 @@ pub extern "C" fn zerlegung_fertig() {
     j.push_str(&z.ohne_schluessel.to_string());
 
     j.push_str(",\"ersteSchluessel\":[");
-    for (i, s) in z.erste_schluessel.iter().take(5000).enumerate() {
+    for (i, s) in z.erste_schluessel.iter().enumerate() {
         if i > 0 {
             j.push(',');
         }
