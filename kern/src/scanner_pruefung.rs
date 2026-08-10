@@ -137,9 +137,107 @@ mod tests {
         assert_eq!(mit, ohne, "Namensraum-Präfixe dürfen nichts ändern");
     }
 
+    /// Der Inhalt muss geprüft werden, nicht nur die Blockgrößen-Gleichheit:
+    /// Dieser Test war einmal grün, während der Scanner das gesamte Dokument
+    /// verwarf — bei jeder Blockgröße gleich, und darum unauffällig. Ein
+    /// DOCTYPE endet auf `>`, nicht auf `?>`.
     #[test]
     fn doctype_wird_uebergangen() {
-        blockgroessen_unabhaengig("<!DOCTYPE A SYSTEM \"a.dtd\"><A><B>x</B></A>");
+        let erwartet = vec!["auf  A", "auf  B", "text x", "zu", "zu"];
+        for g in [1, 2, 3, 5, 8, 200] {
+            assert_eq!(
+                lies(b"<!DOCTYPE A SYSTEM \"a.dtd\"><A><B>x</B></A>", g),
+                erwartet,
+                "Blockgröße {g}"
+            );
+        }
+    }
+
+    /// Ein internes Subset enthält `>` innerhalb der eckigen Klammern. Endete
+    /// die Deklaration dort, begänne der Rest mitten in der DTD.
+    #[test]
+    fn doctype_mit_internem_subset() {
+        let x = b"<!DOCTYPE A [ <!ELEMENT A (B)> <!ENTITY e \"x\"> ]><A><B>y</B></A>";
+        let erwartet = vec!["auf  A", "auf  B", "text y", "zu", "zu"];
+        for g in [1, 3, 7, 500] {
+            assert_eq!(lies(x, g), erwartet, "Blockgröße {g}");
+        }
+    }
+
+    /// Deklaration und Verarbeitungsanweisung nebeneinander — die eine endet
+    /// auf `?>`, die andere auf `>`.
+    #[test]
+    fn deklaration_neben_anweisung() {
+        let x = b"<?xml version=\"1.0\"?>\n<!DOCTYPE A SYSTEM \"a.dtd\">\n<A><B>x</B></A>";
+        assert_eq!(lies(x, 4), vec!["auf  A", "auf  B", "text x", "zu", "zu"]);
+    }
+
+    /// Jedes geöffnete Element muss auch wieder schließen. Ein einziger
+    /// Zählabgleich hätte mehrere stille Fehler auf einmal aufgedeckt.
+    #[test]
+    fn geoeffnete_und_geschlossene_elemente_gleichen_sich_aus() {
+        for x in [
+            &b"<!DOCTYPE A SYSTEM \"a.dtd\"><A><B>x</B><B>y</B></A>"[..],
+            &b"<?xml version=\"1.0\"?><A><B/><C><D>1</D></C></A>"[..],
+            &b"<A><!-- weg --><B><![CDATA[roh]]></B></A>"[..],
+        ] {
+            let z = lies(x, 3);
+            let auf = z.iter().filter(|e| e.starts_with("auf ")).count();
+            let zu = z.iter().filter(|e| *e == "zu").count();
+            assert_eq!(auf, zu, "unausgeglichen bei {:?}", String::from_utf8_lossy(x));
+            assert!(auf > 0, "gar nichts gelesen bei {:?}", String::from_utf8_lossy(x));
+        }
+    }
+
+    /// Zwei Attributwerte, die sich erst nach der Puffergrenze unterscheiden,
+    /// galten als gleich — ein stilles „kein Unterschied" mitten in den Daten.
+    #[test]
+    fn langer_attributwert_bleibt_unterscheidbar() {
+        let bau = |letztes: &str| {
+            format!("<A><B v=\"{}{letztes}\">t</B></A>", "z".repeat(5000)).into_bytes()
+        };
+        assert_ne!(lies(&bau("A"), 7), lies(&bau("B"), 7));
+        // Und die Kürzung ist im Wert sichtbar, statt lautlos zu geschehen.
+        let z = lies(&bau("A"), 7);
+        assert!(
+            z.iter().any(|e| e.contains("…+")),
+            "Kürzung muss erkennbar sein: {z:?}"
+        );
+    }
+
+    /// Dasselbe für Elementnamen jenseits der Puffergrenze.
+    #[test]
+    fn langer_elementname_bleibt_unterscheidbar() {
+        let bau = |letztes: &str| {
+            let n = format!("{}{letztes}", "N".repeat(300));
+            format!("<A><{n}>x</{n}></A>").into_bytes()
+        };
+        assert_ne!(lies(&bau("1"), 5), lies(&bau("2"), 5));
+    }
+
+    /// Bei Elementen wurde das Namensraum-Präfix vor der Längenprüfung
+    /// abgetrennt, bei Attributen danach — ein überlanges Präfix verschluckte
+    /// dort den eigentlichen Attributnamen.
+    #[test]
+    fn langes_praefix_verschluckt_den_attributnamen_nicht() {
+        let x = format!("<A {}:ccy=\"EUR\">1</A>", "p".repeat(300)).into_bytes();
+        let z = lies(&x, 6);
+        assert!(
+            z.iter().any(|e| e == "attr ccy=EUR"),
+            "ccy muss übrig bleiben: {z:?}"
+        );
+    }
+
+    /// Nach einer Namensraum-Erklärung ohne Anführungszeichen blieb der
+    /// xmlns-Merker stehen und unterdrückte das nächste Attribut. Bei
+    /// ISO 20022 wäre das die Währung.
+    #[test]
+    fn xmlns_merker_wirkt_nicht_auf_das_naechste_attribut() {
+        let z = lies(br#"<A xmlns:ns=u ccy="EUR">1</A>"#, 5);
+        assert!(
+            z.iter().any(|e| e == "attr ccy=EUR"),
+            "ccy darf nicht unterdrückt werden: {z:?}"
+        );
     }
 
     #[test]

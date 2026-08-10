@@ -38,6 +38,11 @@ static mut SUCH_PFADE: Vec<Vec<u8>> = Vec::new();
 /// Aus welcher Tabelle die Einzelheiten stammen sollen.
 static mut SUCH_TABELLE: Option<Vec<u8>> = None;
 
+/// Antwort, wenn die Datei nicht UTF-8 ist. Der Scanner liest UTF-16 als
+/// lauter öffnende Tags und käme zu einem leeren Abdruck — zwei verschiedene
+/// Dateien sähen dann gleich aus. Lieber gar keine Zahl als eine falsche.
+const NICHT_UTF8: &str = "{\"fehler\":\"nicht-utf8\"}";
+
 #[no_mangle]
 pub extern "C" fn puffer_ptr() -> *mut u8 {
     &raw mut PUFFER as *mut u8
@@ -59,32 +64,56 @@ pub extern "C" fn ausgabe_len() -> u32 {
 }
 
 fn puffer(len: u32) -> &'static [u8] {
-    unsafe { core::slice::from_raw_parts(&raw const PUFFER as *const u8, len as usize) }
+    // Die Länge kommt allein von der aufrufenden Seite. Für Dateiblöcke hält
+    // sie die Oberfläche ein, für die Konfiguration nicht — und die stammt
+    // aus einem freien Textfeld. Ohne diese Grenze läse Rust über das Objekt
+    // hinaus.
+    let n = (len as usize).min(PUFFER_GROESSE);
+    unsafe { core::slice::from_raw_parts(&raw const PUFFER as *const u8, n) }
 }
 
 fn schreibe(text: &str) {
     let b = text.as_bytes();
-    let n = b.len().min(AUSGABE_GROESSE);
+    // Passt die Antwort nicht in den Puffer, darf sie NICHT halb geschrieben
+    // werden: Abgeschnittenes JSON scheitert beim Einlesen, und der Aufrufer
+    // sieht einen Abbruch ohne Grund statt einer Auskunft. Lieber eine
+    // ehrliche Fehlermeldung als ein halbes Ergebnis.
+    if b.len() > AUSGABE_GROESSE {
+        let notfall = b"{\"fehler\":\"ausgabe zu gross\"}";
+        unsafe {
+            let ziel =
+                core::slice::from_raw_parts_mut(&raw mut AUSGABE as *mut u8, AUSGABE_GROESSE);
+            ziel[..notfall.len()].copy_from_slice(notfall);
+            AUSGABE_LEN = notfall.len();
+        }
+        return;
+    }
     unsafe {
         let ziel = core::slice::from_raw_parts_mut(&raw mut AUSGABE as *mut u8, AUSGABE_GROESSE);
-        ziel[..n].copy_from_slice(&b[..n]);
-        AUSGABE_LEN = n;
+        ziel[..b.len()].copy_from_slice(b);
+        AUSGABE_LEN = b.len();
     }
 }
 
-/// JSON-Zeichenkette absichern. Elementnamen kommen aus fremden Dateien und
-/// dürfen die Ausgabe nicht zerlegen.
+/// JSON-Zeichenkette absichern. Elementnamen und Werte kommen aus fremden
+/// Dateien und dürfen die Ausgabe nicht zerlegen.
+///
+/// Die Bytes werden als UTF-8 gelesen, nicht Byte für Byte durchgereicht.
+/// Ein `c as char` deutet jedes Byte ab 0x80 als Latin-1-Zeichen: „Müller"
+/// wurde dadurch zu „MÃ¼ller", und die Bytes 0x80–0x9F zu unsichtbaren
+/// Steuerzeichen. Der Vergleich blieb zwar richtig, aber der einzige Zweck
+/// dieser Werte ist, dass ein Mensch sie liest.
 fn json_text(roh: &[u8], ziel: &mut String) {
     ziel.push('"');
-    for &c in roh {
-        match c {
-            b'"' => ziel.push_str("\\\""),
-            b'\\' => ziel.push_str("\\\\"),
-            b'\n' => ziel.push_str("\\n"),
-            b'\r' => ziel.push_str("\\r"),
-            b'\t' => ziel.push_str("\\t"),
-            0x00..=0x1f => ziel.push_str(&format!("\\u{:04x}", c)),
-            _ => ziel.push(c as char),
+    for z in String::from_utf8_lossy(roh).chars() {
+        match z {
+            '"' => ziel.push_str("\\\""),
+            '\\' => ziel.push_str("\\\\"),
+            '\n' => ziel.push_str("\\n"),
+            '\r' => ziel.push_str("\\r"),
+            '\t' => ziel.push_str("\\t"),
+            c if (c as u32) < 0x20 => ziel.push_str(&format!("\\u{:04x}", c as u32)),
+            c => ziel.push(c),
         }
     }
     ziel.push('"');
@@ -130,6 +159,14 @@ pub extern "C" fn erkundung_fertig() {
         }
     };
     s.abschliessen(e);
+    if s.nicht_utf8 {
+        schreibe(NICHT_UTF8);
+        return;
+    }
+    if s.nicht_utf8 {
+        schreibe(NICHT_UTF8);
+        return;
+    }
 
     let mut j = String::with_capacity(64 * 1024);
     j.push_str("{\"elemente\":");
@@ -159,7 +196,11 @@ pub extern "C" fn erkundung_fertig() {
             j.push(']');
 
             // Wiederholgruppen — jede wird eine eigene Tabelle.
-            j.push_str(",\"untertabellen\":[");
+            j.push_str(",\"schluesselKandidatenGesamt\":");
+    j.push_str(&e.schluessel_vorschlaege(&pfad).len().to_string());
+    j.push_str(",\"untertabellenGesamt\":");
+    j.push_str(&e.untertabellen_vorschlaege(&pfad).len().to_string());
+    j.push_str(",\"untertabellen\":[");
             for (i, (pfad, anzahl, gruppe)) in
                 e.untertabellen_vorschlaege(&pfad).iter().take(50).enumerate()
             {
@@ -256,6 +297,10 @@ pub extern "C" fn abdruck_fertig() {
         }
     };
     s.abschliessen(a);
+    if s.nicht_utf8 {
+        schreibe(NICHT_UTF8);
+        return;
+    }
 
     let g = a.gesamt();
     let mut j = String::with_capacity(256 * 1024);
@@ -491,6 +536,10 @@ pub extern "C" fn einzelheiten_fertig() {
         }
     };
     s.abschliessen(e);
+    if s.nicht_utf8 {
+        schreibe(NICHT_UTF8);
+        return;
+    }
 
     let mut j = String::with_capacity(64 * 1024);
     j.push_str("{\"abgeschnitten\":");
@@ -587,6 +636,10 @@ pub extern "C" fn zerlegung_fertig() {
         }
     };
     s.abschliessen(z);
+    if s.nicht_utf8 {
+        schreibe(NICHT_UTF8);
+        return;
+    }
 
     let mut j = String::with_capacity(256 * 1024);
     j.push_str("{\"verfahren\":\"xmlabgleich/2\",\"gesamt\":\"");

@@ -8,7 +8,16 @@ set -e
 cd "$(dirname "$0")"
 
 echo "  Prüfungen …"
-(cd kern && cargo test --quiet 2>&1 | grep -E 'test result|error' | head -3)
+# Ohne eigenen Statusabgleich hält eine rote Prüfung den Bau nicht auf: In
+# einer Pipeline zählt der Rückgabewert des LETZTEN Glieds — `head` liefert
+# immer 0, und `set -e` sieht nichts. Der Bau lief dann durch, überschrieb
+# index.html und meldete „Fertig" aus rotem Quelltext.
+if ! (cd kern && cargo test --quiet > /tmp/xmlabgleich-pruefung.log 2>&1); then
+    echo "  ABBRUCH — Prüfungen rot:"
+    grep -E 'test result|panicked|^error|FAILED|assertion' /tmp/xmlabgleich-pruefung.log | head -20
+    exit 1
+fi
+grep -E 'test result' /tmp/xmlabgleich-pruefung.log | head -2
 
 echo "  WASM bauen …"
 (cd kern && cargo build --release --target wasm32-unknown-unknown --quiet)
@@ -23,7 +32,17 @@ WASM=kern/target/wasm32-unknown-unknown/release/xmlabgleich.wasm
 # Modul war unter macOS 224.495 und unter Linux 223.309 Byte groß. Ein
 # Prüflauf, der Byte-Identität verlangt, kann deshalb nie grün werden. Der
 # Quelltexthash dagegen ist überall derselbe.
-QUELLHASH=$(cat kern/src/*.rs kern/Cargo.toml web/vorlage.html | shasum -a 256 | cut -c1-16)
+#
+# `LC_ALL=C` und `find | sort` statt `kern/src/*.rs`: Die Reihenfolge eines
+# Globs folgt der Sprachumgebung. Unter macOS (UTF-8) kam `abdruck_pruefung.rs`
+# vor `abdruck.rs`, unter Linux (C) umgekehrt — derselbe Quelltext ergab zwei
+# verschiedene Hashes, und die Prüfung wäre rot geworden mit der Aufforderung,
+# genau das zu tun, was man gerade getan hat. `find` erfasst zugleich künftige
+# Unterverzeichnisse, und `bauen.sh` selbst geht mit ein: Es entscheidet, was
+# eingebettet wird.
+QUELLHASH=$(find kern/src -name '*.rs' | LC_ALL=C sort | xargs cat |
+    cat - kern/Cargo.toml kern/Cargo.lock web/vorlage.html bauen.sh |
+    shasum -a 256 | cut -c1-16)
 
 echo "  Einbetten …"
 # Das Einsetzen läuft über Python und nicht über sed/awk: Die Base64-Fassung

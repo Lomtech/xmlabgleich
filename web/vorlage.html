@@ -187,11 +187,41 @@ async function ladeModul() {
   return modul;
 }
 
-/** Liest das Ergebnis-JSON aus dem Ausgabepuffer. */
+/**
+ * Liest das Ergebnis-JSON aus dem Ausgabepuffer.
+ *
+ * Der Kern antwortet mit `{fehler: …}`, wenn er die Datei nicht auswerten
+ * kann. Das wurde hier bisher nicht abgefragt — das Ergebnis wäre dann ein
+ * Bericht voller `undefined` gewesen, der aussieht wie ein Befund. Lieber
+ * abbrechen und sagen, was los ist.
+ */
 function ergebnisLesen(w) {
   const len = w.ausgabe_len();
   const roh = new Uint8Array(w.memory.buffer, w.ausgabe_ptr(), len);
-  return JSON.parse(new TextDecoder().decode(roh));
+  const e = JSON.parse(new TextDecoder().decode(roh));
+  if (e && e.fehler) throw new KernFehler(e.fehler);
+  return e;
+}
+
+/** Ein Abbruch aus dem Kern, mit einer für Menschen lesbaren Erklärung. */
+class KernFehler extends Error {
+  constructor(art) {
+    super(KernFehler.text(art));
+    this.art = art;
+  }
+  static text(art) {
+    if (art === "nicht-utf8") {
+      return "Die Datei ist nicht UTF-8, sondern UTF-16 (erkennbar an den "
+        + "Nullbytes zwischen den Zeichen). So gelesen ergäbe der Abgleich "
+        + "Unsinn, deshalb bricht er hier ab. Speichern Sie die Datei als "
+        + "UTF-8 und versuchen Sie es erneut.";
+    }
+    if (art === "nicht begonnen") {
+      return "Der Kern wurde in falscher Reihenfolge angesprochen — bitte die "
+        + "Seite neu laden.";
+    }
+    return `Der Kern meldet: ${art}`;
+  }
 }
 
 /**
@@ -259,8 +289,21 @@ async function uebernehmen(seite, datei) {
   $("groesse-" + seite).textContent = groesse(datei.size);
   $("ergebnis").innerHTML = "";
 
-  // Der Aufbau wird an der Quelle erkundet, sobald sie da ist.
-  if (seite === "a") await erkunden(datei);
+  // Der Aufbau wird an der Quelle erkundet, sobald sie da ist. Bricht der
+  // Kern ab, muss das hier stehen — sonst bliebe „Aufbau wird gelesen …"
+  // stehen und niemand wüsste warum.
+  if (seite === "a") {
+    try {
+      await erkunden(datei);
+    } catch (e) {
+      if (!(e instanceof KernFehler)) throw e;
+      $("erkundet").textContent = "";
+      $("ergebnis").innerHTML = `<div class="karte">
+        <span class="marke schlecht">nicht lesbar</span> ${escape(e.message)}</div>`;
+      $("starten").disabled = true;
+      return;
+    }
+  }
   $("starten").disabled = !(dateien.a && dateien.b);
 }
 
@@ -371,6 +414,7 @@ $("starten").addEventListener("click", async () => {
   $("starten").disabled = true;
   $("balken").classList.remove("verborgen");
   $("ergebnis").innerHTML = "";
+  try {
 
   const t0 = performance.now();
   const melden = (name, anteilBasis) => (gelesen, gesamt) => {
@@ -408,6 +452,14 @@ $("starten").addEventListener("click", async () => {
     // Jetzt sind auch die einzelnen Werte da — die Befundliste bekommt sie.
     zeigeBefunde(e, gefunden ?? null);
     standSpeichern({ bericht: e, einzelheiten: gefunden ?? null });
+  }
+  } catch (e) {
+    if (!(e instanceof KernFehler)) throw e;
+    $("ergebnis").innerHTML = `<div class="karte">
+      <span class="marke schlecht">abgebrochen</span> ${escape(e.message)}</div>`;
+  } finally {
+    $("balken").classList.add("verborgen");
+    $("starten").disabled = false;
   }
 });
 
@@ -710,6 +762,9 @@ function datenTabelle(id, spalten, zeilen, dateiname) {
   return `<div class="datentabelle" id="${id}"></div>`;
 }
 
+/** Zahlen in Texten der Größe nach ordnen: „POS[2]" vor „POS[10]". */
+const ordner = new Intl.Collator("de", { numeric: true, sensitivity: "base" });
+
 function sichtbareZeilen(z) {
   // Ergebnis merken: Bei Hunderttausenden Zeilen darf nicht bei jedem
   // Blättern neu gefiltert und sortiert werden.
@@ -730,7 +785,10 @@ function sichtbareZeilen(z) {
       const zx = Number(x), zy = Number(y);
       const cmp = (s.zahl && !isNaN(zx) && !isNaN(zy))
         ? zx - zy
-        : String(x ?? "").localeCompare(String(y ?? ""), "de");
+        // Mit `numeric` — sonst steht „10" vor „9" und „POS[10]" vor
+        // „POS[2]", also gerade in den Spalten falsch, nach denen man
+        // sortiert.
+        : ordner.compare(String(x ?? ""), String(y ?? ""));
       return z.absteigend ? -cmp : cmp;
     });
   }
@@ -746,7 +804,7 @@ function zeichneTabelle(id) {
 
   const gefiltert = sichtbareZeilen(z);
   const maxSeite = Math.max(Math.ceil(gefiltert.length / SEITE) - 1, 0);
-  z.seite = Math.min(z.seite, maxSeite);
+  z.seite = Math.min(Math.max(z.seite, 0), maxSeite);
   const von = z.seite * SEITE;
   const zeigen = gefiltert.slice(von, von + SEITE);
 
@@ -838,7 +896,13 @@ function alsCsv(id) {
   const z = tabellenZustand.get(id);
   if (!z) return;
   const feld = (v) => {
-    const s = String(v ?? "");
+    let s = String(v ?? "");
+    // Excel wertet einen Wert aus, der mit = + - @ beginnt, als Formel —
+    // auch in Anführungszeichen. Eine Telefonnummer „+49 89 …" erscheint
+    // dann als #NAME?, und =HYPERLINK(…) trüge Tabelleninhalt nach außen.
+    // Ein vorangestelltes Apostroph macht daraus wieder Text; im Bericht
+    // soll stehen, was in der Datei steht.
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
     return /[";\n\r]/.test(s) ? '"' + s.replaceAll('"', '""') + '"' : s;
   };
   const zeilen = sichtbareZeilen(z);
@@ -1105,6 +1169,26 @@ function mengeAnders(e) { return e.a.datensaetze !== e.b.datensaetze }
 
 function zeigeBericht(e, datensatz, schluessel, ziel = null) {
   const t = [];
+
+  // Wurde überhaupt etwas erfasst? Passt der Datensatzpfad auf kein Element,
+  // bleiben beide Abdrücke leer — und leer ist gleich leer. Das Werkzeug hat
+  // dann für zwei beliebige Dateien „kein Unterschied" gemeldet. Ohne
+  // Datensätze gibt es kein Urteil, nur die Frage nach dem Pfad.
+  if (!e.a.datensaetze || !e.b.datensaetze) {
+    const leer = [];
+    if (!e.a.datensaetze) leer.push(escape(e.dateiA?.name ?? "die Quelle"));
+    if (!e.b.datensaetze) leer.push(escape(e.dateiB?.name ?? "das Ziel"));
+    (ziel ?? $("ergebnis")).innerHTML = `<h2>Unterschiede</h2>
+      <div class="karte"><span class="marke schlecht">nichts erfasst</span>
+      <p>In ${leer.join(" und ")} wurde <b>kein einziger Datensatz</b> gefunden.
+      Verglichen wurde damit nichts — und weil zwei leere Ergebnisse zwangsläufig
+      gleich sind, stünde hier sonst fälschlich „kein Unterschied".</p>
+      <p>Das Datensatz-Element <code>${escape(datensatz)}</code> passt auf kein
+      Element dieser Datei. Prüfen Sie den Pfad oben; er wird an der Quelle
+      erkundet und auf beide Dateien angewandt, muss also in beiden vorkommen.</p>
+      </div>`;
+    return;
+  }
 
   // Die Befundliste zuerst — sie beantwortet die Frage. Die Ebenen darunter
   // zeigen, wie das Werkzeug darauf gekommen ist.
@@ -1380,15 +1464,15 @@ function satzfolgeText(e) {
 
   if (hier !== undefined && dort !== undefined && mengeA.has(dort) && mengeB.has(hier)) {
     return `Ab dem ${zahl(i + 1)}. Datensatz stehen dieselben Sätze in anderer Folge: ` +
-           `Quelle „${hier}", Ziel „${dort}". Ob das zählt, hängt davon ab, ob das Zielsystem ` +
+           `Quelle „${escape(hier)}", Ziel „${escape(dort)}". Ob das zählt, hängt davon ab, ob das Zielsystem ` +
            `in Dokumentfolge verarbeitet.`;
   }
   if (dort !== undefined && !mengeA.has(dort)) {
-    return `Ab dem ${zahl(i + 1)}. Datensatz: Im Ziel steht „${dort}", ` +
+    return `Ab dem ${zahl(i + 1)}. Datensatz: Im Ziel steht „${escape(dort)}", ` +
            `der in der Quelle nicht vorkommt.`;
   }
   if (hier !== undefined && !mengeB.has(hier)) {
-    return `Ab dem ${zahl(i + 1)}. Datensatz: „${hier}" aus der Quelle fehlt im Ziel.`;
+    return `Ab dem ${zahl(i + 1)}. Datensatz: „${escape(hier)}" aus der Quelle fehlt im Ziel.`;
   }
   return `Die Folge läuft ab dem ${zahl(i + 1)}. Datensatz auseinander.`;
 }
@@ -1458,7 +1542,11 @@ function schlank(bericht) {
       eimer: tb.eimer.slice(0, 50),
     })),
     eimer: (bericht.eimer ?? []).slice(0, 50),
-    spalten: (bericht.spalten ?? []).slice(0, 300),
+    // Nicht kürzen: Diese Liste trägt die Befunde („Feld fehlt im Ziel").
+    // Gekürzt gespeichert meldete der Bericht nach dem Neuladen 300 statt
+    // 390 — ohne Hinweis. Gespart hätte es ohnehin nichts, die vollständige
+    // Fassung steckt in tabellen[].spalten.
+    spalten: bericht.spalten ?? [],
   };
 }
 
@@ -1472,12 +1560,18 @@ function standSpeichern(zusatz = {}) {
       zusatz = { ...klein, imLager: true };
       // Kein await: Der Aufrufer soll nicht warten. Scheitert es, sagt es der
       // Nutzer erfährt es beim nächsten Laden — nicht nur die Konsole.
-      grossMerken("stand", gross).catch(e => {
+      grossMerken("stand", gross).then(() => {
+        localStorage.removeItem(SCHLUESSEL_STAND + ":fehler");
+      }).catch(e => {
         console.warn("Bericht nicht merkbar:", e);
         localStorage.setItem(SCHLUESSEL_STAND + ":fehler", String(e?.message ?? e));
       });
     }
     const stand = {
+      // Über den vorhandenen Stand schreiben, nicht ersetzen. Sonst
+      // verschwindet `imLager` bei jedem Aufruf ohne Bericht — etwa beim
+      // Wechsel des Schlüsselfelds — und der gemerkte Bericht ist weg.
+      ...(standLesen() ?? {}),
       zeit: Date.now(),
       datensatz: $("datensatz").value,
       schluessel: $("schluessel").value,
@@ -1510,8 +1604,16 @@ function db() {
       if (!a.result.objectStoreNames.contains("verweise")) a.result.createObjectStore("verweise");
       if (!a.result.objectStoreNames.contains("berichte")) a.result.createObjectStore("berichte");
     };
-    a.onsuccess = () => ok(a.result);
+    a.onsuccess = () => {
+      // Damit ein späterer Versionswechsel nicht an dieser Verbindung
+      // hängenbleibt.
+      a.result.onversionchange = () => a.result.close();
+      ok(a.result);
+    };
     a.onerror = () => fehler(a.error);
+    a.onblocked = () => fehler(new Error(
+      "Ein anderes Fenster mit dieser Seite hält den Speicher offen — "
+      + "bitte die übrigen Fenster schließen."));
   });
 }
 

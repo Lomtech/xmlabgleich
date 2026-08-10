@@ -52,19 +52,73 @@ enum Zustand {
     Kommentar,
     /// `<![CDATA[ … ]]>` — der Inhalt ist Text, auch wenn `<` darin steht.
     CData,
-    /// `<? … ?>` und `<!DOCTYPE …>`
+    /// `<? … ?>` — endet auf `?>`.
     Anweisung,
+    /// `<!DOCTYPE …>`, `<!ENTITY …>` und alles andere mit `!`, das weder
+    /// Kommentar noch CDATA ist. Endet auf einem `>`, **nicht** auf `?>`.
+    ///
+    /// Das ist kein Detail: Wurde eine Deklaration wie `<? … ?>` behandelt,
+    /// suchte der Scanner ein `?>`, das nie kam — und verwarf den Rest der
+    /// Datei. Eine Datei mit DOCTYPE lieferte dadurch null Elemente, und zwei
+    /// verschiedene solche Dateien hatten beide einen leeren Abdruck, galten
+    /// also als gleich.
+    ///
+    /// Der Zähler ist die Schachtelungstiefe des internen Subsets
+    /// (`<!DOCTYPE a [ <!ENTITY …> ]>`): Innerhalb der eckigen Klammern
+    /// beendet ein `>` die Deklaration nicht.
+    Erklaerung(u32),
 }
 
 /// Längste Zeichenfolge, die nach `<` geprüft werden muss: `![CDATA[`.
 const MERKER_GROESSE: usize = 8;
-/// Längster Elementname, den wir am Stück halten. Alles darüber wird
-/// abgeschnitten — solche Namen kommen in Datenaustauschformaten nicht vor,
-/// und ein unbegrenzter Puffer wäre ein Einfallstor.
+/// Längster Elementname, den wir am Stück halten. Ein unbegrenzter Puffer
+/// wäre ein Einfallstor; solche Namen kommen in Datenaustauschformaten
+/// ohnehin nicht vor.
+///
+/// Der überzählige Teil wird nicht verworfen, sondern in einen Hash
+/// gerechnet, der dem gemeldeten Namen angehängt wird. Sonst wären zwei
+/// verschiedene Namen mit gleichen ersten 256 Zeichen für das Werkzeug
+/// dasselbe Element — ein stilles „kein Unterschied".
 const NAME_GROESSE: usize = 256;
+
+/// Ebenso für Attributwerte. Auch hier gilt: was nicht mehr in den Puffer
+/// passt, geht in den Überlauf-Hash statt verloren.
+const ATTRIBUTWERT_GROESSE: usize = 4096;
+
+const FNV_ANFANG: u32 = 2166136261;
+const FNV_PRIM: u32 = 16777619;
+
+/// Rechnet ein Byte in den Überlauf-Hash ein. Der Hash beginnt bei 0 und
+/// bleibt 0, solange nichts überlief — so ist „kein Überlauf" von „Überlauf,
+/// dessen Hash zufällig 0 wäre" unterscheidbar.
+#[inline]
+fn ueberlauf_weiter(h: u32, b: u8) -> u32 {
+    let h = if h == 0 { FNV_ANFANG } else { h };
+    let h = (h ^ b as u32).wrapping_mul(FNV_PRIM);
+    if h == 0 { 1 } else { h }
+}
+
+/// Hängt die Überlauf-Kennung an. Sichtbar, damit im Bericht erkennbar
+/// bleibt, dass hier gekürzt wurde.
+fn mit_ueberlauf(kopf: &[u8], hash: u32) -> Vec<u8> {
+    let mut v = Vec::with_capacity(kopf.len() + 12);
+    v.extend_from_slice(kopf);
+    v.extend_from_slice(format!("…+{hash:08x}").as_bytes());
+    v
+}
 
 pub struct Scanner {
     zustand: Zustand,
+    /// Ist noch kein Byte gelesen? Nur dann wird auf Kodierung geprüft.
+    erster_block: bool,
+    /// Die Datei ist nicht UTF-8 (UTF-16 mit oder ohne Kennung). Der Scanner
+    /// liefert dann Unsinn statt eines Fehlers: In UTF-16LE steht hinter dem
+    /// `<` ein Nullbyte, kein `/`, also wird *jedes* schließende Tag als
+    /// öffnendes gelesen — der Pfadstapel wächst unbegrenzt, kein Blatt wird
+    /// je gezählt, und zwei verschiedene Dateien haben beide einen leeren
+    /// Abdruck. Darum wird hier abgebrochen und nach oben gemeldet, statt
+    /// eine Zahl zu erfinden.
+    pub nicht_utf8: bool,
     /// Sammelt die Zeichen direkt nach `<`, um zu entscheiden, was folgt.
     merker: [u8; MERKER_GROESSE],
     merker_len: usize,
@@ -89,6 +143,10 @@ pub struct Scanner {
     /// Blockgrenze reichen.
     attr_name: Vec<u8>,
     attr_wert: Vec<u8>,
+    /// Hash dessen, was nicht mehr in `attr_wert` passte (0 = nichts).
+    attr_wert_ueberlauf: u32,
+    /// Hash dessen, was nicht mehr in `name` passte (0 = nichts).
+    name_ueberlauf: u32,
     /// War das Attribut eine Namensraum-Erklärung? Muss beim Verwerfen des
     /// Präfixes festgehalten werden: Aus `xmlns:ns` wird sonst `ns`, und die
     /// Erklärung sähe aus wie ein gewöhnliches Attribut.
@@ -105,6 +163,8 @@ impl Scanner {
     pub fn neu() -> Self {
         Scanner {
             zustand: Zustand::Text,
+            erster_block: true,
+            nicht_utf8: false,
             merker: [0; MERKER_GROESSE],
             merker_len: 0,
             name: [0; NAME_GROESSE],
@@ -115,6 +175,8 @@ impl Scanner {
             selbstschluss: false,
             attr_name: Vec::new(),
             attr_wert: Vec::new(),
+            attr_wert_ueberlauf: 0,
+            name_ueberlauf: 0,
             attr_ist_xmlns: false,
         }
     }
@@ -123,6 +185,24 @@ impl Scanner {
     /// erhalten. Nach dem letzten Block `abschliessen` rufen.
     pub fn block<B: Beobachter>(&mut self, daten: &[u8], b: &mut B) {
         let mut i = 0;
+
+        if self.erster_block && !daten.is_empty() {
+            self.erster_block = false;
+            match daten {
+                // UTF-16 mit Kennung, oder ohne Kennung erkennbar am
+                // Nullbyte neben dem ersten `<`.
+                [0xFF, 0xFE, ..] | [0xFE, 0xFF, ..] | [b'<', 0, ..] | [0, b'<', ..] => {
+                    self.nicht_utf8 = true;
+                }
+                // UTF-8-Kennung: gehört nicht zum Inhalt.
+                [0xEF, 0xBB, 0xBF, ..] => i = 3,
+                _ => {}
+            }
+        }
+        if self.nicht_utf8 {
+            return;
+        }
+
         while i < daten.len() {
             match self.zustand {
                 Zustand::Text => {
@@ -166,15 +246,29 @@ impl Scanner {
                             self.fenster_len = 0;
                             i += 1;
                         }
+                        Entscheidung::Erklaerung => {
+                            // Das `!` selbst ist schon gelesen; ein `[` darin
+                            // eröffnet das interne Subset und muss zählen.
+                            self.zustand = Zustand::Erklaerung(
+                                self.merker[..self.merker_len]
+                                    .iter()
+                                    .filter(|c| **c == b'[')
+                                    .count() as u32,
+                            );
+                            self.fenster_len = 0;
+                            i += 1;
+                        }
                         Entscheidung::Schluss => {
                             self.zustand = Zustand::SchlussName;
                             self.name_len = 0;
+                            self.name_ueberlauf = 0;
                             i += 1;
                         }
                         Entscheidung::Beginn => {
                             // Das erste Zeichen gehört schon zum Namen.
                             self.zustand = Zustand::Name;
                             self.name_len = 0;
+                            self.name_ueberlauf = 0;
                             self.name_gemeldet = false;
                             self.selbstschluss = false;
                             // nicht i erhöhen: das Zeichen im Namen-Zustand lesen
@@ -206,9 +300,12 @@ impl Scanner {
                         // nicht beeinflussen.
                         if c == b':' {
                             self.name_len = 0;
+                            self.name_ueberlauf = 0;
                         } else if self.name_len < NAME_GROESSE {
                             self.name[self.name_len] = c;
                             self.name_len += 1;
+                        } else {
+                            self.name_ueberlauf = ueberlauf_weiter(self.name_ueberlauf, c);
                         }
                         i += 1;
                     }
@@ -221,9 +318,12 @@ impl Scanner {
                         self.zustand = Zustand::Text;
                     } else if c == b':' {
                         self.name_len = 0;
+                        self.name_ueberlauf = 0;
                     } else if self.name_len < NAME_GROESSE {
                         self.name[self.name_len] = c;
                         self.name_len += 1;
+                    } else {
+                        self.name_ueberlauf = ueberlauf_weiter(self.name_ueberlauf, c);
                     }
                     i += 1;
                 }
@@ -263,18 +363,19 @@ impl Scanner {
                         self.attr_name.clear();
                         self.nach_tagende(b);
                         self.zustand = Zustand::Text;
-                    } else if self.attr_name.len() < NAME_GROESSE {
+                    } else if c == b':' {
                         // Namensraum-Präfix verwerfen, wie bei Elementen —
                         // vorher aber festhalten, ob es eine
-                        // Namensraum-Erklärung war.
-                        if c == b':' {
-                            if self.attr_name == b"xmlns" {
-                                self.attr_ist_xmlns = true;
-                            }
-                            self.attr_name.clear();
-                        } else {
-                            self.attr_name.push(c);
+                        // Namensraum-Erklärung war. Diese Prüfung muss vor
+                        // der Längengrenze stehen: Sonst bliebe bei einem
+                        // überlangen Präfix das Präfix stehen und der
+                        // eigentliche Name fiele weg.
+                        if self.attr_name == b"xmlns" {
+                            self.attr_ist_xmlns = true;
                         }
+                        self.attr_name.clear();
+                    } else if self.attr_name.len() < NAME_GROESSE {
+                        self.attr_name.push(c);
                     }
                     i += 1;
                 }
@@ -289,7 +390,13 @@ impl Scanner {
                         self.zustand = Zustand::Text;
                     } else if !c.is_ascii_whitespace() && c != b'=' {
                         // Doch kein Wert — das war schon der nächste Name.
+                        // Merker mit zurücksetzen, sonst unterdrückt eine
+                        // vorangegangene Namensraum-Erklärung das folgende
+                        // Attribut (bei ISO 20022 wäre das die Währung).
                         self.attr_name.clear();
+                        self.attr_wert.clear();
+                        self.attr_wert_ueberlauf = 0;
+                        self.attr_ist_xmlns = false;
                         self.attr_name.push(c);
                         self.zustand = Zustand::AttributName;
                     }
@@ -308,17 +415,25 @@ impl Scanner {
                             {
                                 let name = std::mem::take(&mut self.attr_name);
                                 let wert = std::mem::take(&mut self.attr_wert);
-                                b.attribut(&name, &wert);
+                                if self.attr_wert_ueberlauf == 0 {
+                                    b.attribut(&name, &wert);
+                                } else {
+                                    b.attribut(&name, &mit_ueberlauf(&wert, self.attr_wert_ueberlauf));
+                                }
                             }
                             self.attr_name.clear();
                             self.attr_wert.clear();
+                            self.attr_wert_ueberlauf = 0;
                             self.attr_ist_xmlns = false;
                             self.zustand = Zustand::ImTag;
                             i += 1;
                             break;
                         }
-                        if self.attr_wert.len() < 4096 {
+                        if self.attr_wert.len() < ATTRIBUTWERT_GROESSE {
                             self.attr_wert.push(daten[i]);
+                        } else {
+                            self.attr_wert_ueberlauf =
+                                ueberlauf_weiter(self.attr_wert_ueberlauf, daten[i]);
                         }
                         i += 1;
                     }
@@ -351,6 +466,26 @@ impl Scanner {
                 Zustand::Anweisung => {
                     i = self.bis_ende(daten, i, b"?>");
                 }
+                Zustand::Erklaerung(tiefe) => {
+                    let mut t = tiefe;
+                    while i < daten.len() {
+                        let c = daten[i];
+                        i += 1;
+                        match c {
+                            b'[' => t += 1,
+                            b']' => t = t.saturating_sub(1),
+                            b'>' if t == 0 => {
+                                self.zustand = Zustand::Text;
+                                break;
+                            }
+                            _ => {}
+                        }
+                        self.zustand = Zustand::Erklaerung(t);
+                    }
+                    if self.zustand != Zustand::Text {
+                        self.zustand = Zustand::Erklaerung(t);
+                    }
+                }
             }
         }
     }
@@ -365,7 +500,12 @@ impl Scanner {
 
     fn melde_beginn<B: Beobachter>(&mut self, b: &mut B) {
         if !self.name_gemeldet {
-            b.element_beginn(&self.name[..self.name_len]);
+            if self.name_ueberlauf == 0 {
+                b.element_beginn(&self.name[..self.name_len]);
+            } else {
+                let voll = mit_ueberlauf(&self.name[..self.name_len], self.name_ueberlauf);
+                b.element_beginn(&voll);
+            }
             self.name_gemeldet = true;
         }
     }
@@ -432,7 +572,7 @@ impl Scanner {
             [b'!', b'[', b'C', b'D', b'A', b'T', b'A'] => Entscheidung::Warten,
             [b'!', b'[', b'C', b'D', b'A', b'T', b'A', b'['] => Entscheidung::CData,
             // `<!DOCTYPE`, `<!ENTITY` und alles andere mit `!`
-            [b'!', ..] => Entscheidung::Anweisung,
+            [b'!', ..] => Entscheidung::Erklaerung,
             _ => Entscheidung::Beginn,
         }
     }
@@ -445,6 +585,7 @@ enum Entscheidung {
     Kommentar,
     CData,
     Anweisung,
+    Erklaerung,
 }
 
 #[inline]

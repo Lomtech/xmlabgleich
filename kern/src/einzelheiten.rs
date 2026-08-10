@@ -12,7 +12,7 @@
 //! eine Tabelle, ein paar Eimer, ein paar Felder.
 
 use crate::scanner::Beobachter;
-use crate::tabellen::{fnv, mit_index, unterschluessel, OffeneZeile};
+use crate::tabellen::{fnv, mit_index, unterschluessel, OffeneZeile, KLARTEXT_HOECHSTENS};
 use std::collections::HashSet;
 
 
@@ -326,8 +326,15 @@ impl Beobachter for Einzelheiten {
     }
 
     fn text(&mut self, teil: &[u8]) {
-        if self.text.len() < 4096 {
-            self.text.extend_from_slice(teil);
+        // Byte-genau kappen, nicht stückweise. Die Prüfung stand vor dem
+        // Anhängen: Ein Textstück wurde ganz übernommen, sobald der Puffer
+        // noch ein Byte frei hatte. Wo die Blockgrenze fällt, hängt aber von
+        // der Dateigröße ab — derselbe Wert wurde in Quelle und Ziel
+        // verschieden lang gemeldet und als Unterschied ausgegeben, den es
+        // nicht gab.
+        let platz = KLARTEXT_HOECHSTENS.saturating_sub(self.text.len());
+        if platz > 0 {
+            self.text.extend_from_slice(&teil[..platz.min(teil.len())]);
         }
     }
 }

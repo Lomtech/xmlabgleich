@@ -25,7 +25,12 @@ jobs:
 
       - name: Passt index.html zum Quelltext?
         run: |
-          erwartet=$(cat kern/src/*.rs kern/Cargo.toml web/vorlage.html | sha256sum | cut -c1-16)
+          # Zeichengleich zu bauen.sh — insbesondere LC_ALL=C, sonst
+          # unterscheidet sich die Glob-Reihenfolge zwischen macOS und Linux
+          # und derselbe Quelltext ergibt zwei Hashes.
+          erwartet=$(find kern/src -name '*.rs' | LC_ALL=C sort | xargs cat |
+              cat - kern/Cargo.toml kern/Cargo.lock web/vorlage.html bauen.sh |
+              sha256sum | cut -c1-16)
           gefunden=$(grep -o 'name="quelltext" content="[0-9a-f]*"' index.html | grep -o '[0-9a-f]\{16\}' || true)
           echo "  Quelltext:     $erwartet"
           echo "  in index.html: ${gefunden:-— fehlt —}"
@@ -33,6 +38,13 @@ jobs:
             echo "index.html stammt aus einem anderen Stand — bitte ./bauen.sh laufen lassen und mitliefern."
             exit 1
           fi
+
+      - name: Sind beide Auslieferungen gleich?
+        run: |
+          # index.html und xmlabgleich.html sind dieselbe Datei unter zwei
+          # Namen. Geprüft wurde bisher nur die eine — die andere hätte
+          # unbemerkt veralten können.
+          cmp index.html xmlabgleich.html
 
       - name: Ist das eingebettete Modul lauffähig?
         run: |

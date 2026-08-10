@@ -7,7 +7,7 @@
 
 use crate::abdruck::Aggregat;
 use crate::scanner::Beobachter;
-use crate::tabellen::{
+use crate::tabellen::{KLARTEXT_HOECHSTENS, 
     fnv, fnv_weiter, mit_index, unterschluessel, OffeneZeile, Tabelle, WartendeZeile,
 };
 use std::collections::{HashMap, HashSet};
@@ -447,13 +447,13 @@ impl Beobachter for Zerlegung {
             }
             if self.text_wartend > 0 {
                 self.text_hash = fnv_weiter(self.text_hash, b" ");
-                if self.text_klartext.len() < 256 {
+                if self.text_klartext.len() < KLARTEXT_HOECHSTENS {
                     self.text_klartext.push(b' ');
                 }
                 self.text_wartend = 0;
             }
             self.text_hash = fnv_weiter(self.text_hash, &[c]);
-            if self.text_klartext.len() < 256 {
+            if self.text_klartext.len() < KLARTEXT_HOECHSTENS {
                 self.text_klartext.push(c);
             }
             self.text_hat_inhalt = true;

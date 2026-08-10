@@ -1,5 +1,14 @@
 //! Verschachtelung als eigene Tabellen.
 //!
+//! ## Eine Grenze für beide Durchläufe
+//!
+//! [`KLARTEXT_HOECHSTENS`] gilt für Zerlegung **und** Nachlauf. Als die
+//! beiden verschieden waren (256 gegen 4096), berechneten sie aus demselben
+//! Datensatz verschiedene Schlüssel und damit verschiedene Eimer: Der erste
+//! Durchlauf meldete „Eimer 2757 weicht ab", der zweite las Eimer 2757 und
+//! fand dort nichts. Der Unterschied war gefunden und ließ sich trotzdem
+//! nicht benennen.
+//!
 //! Bis hierher war ein Datensatz eine flache Menge von Feldern: Alle sechs
 //! `INVESTMENTIDENTIFIER` eines Investments landeten im selben Feldpfad, ihre
 //! Werte in derselben Summe. Werden zwei davon untereinander vertauscht, ändert
@@ -25,6 +34,12 @@
 
 use crate::abdruck::Aggregat;
 use std::collections::HashMap;
+
+/// So viel Klartext wird von einem Wert behalten. Der Hash läuft über den
+/// **vollen** Text, der Klartext ist nur zum Anzeigen und Wiedererkennen da.
+///
+/// Beide Durchläufe müssen dieselbe Zahl verwenden — siehe Modulkopf.
+pub const KLARTEXT_HOECHSTENS: usize = 4096;
 
 const FNV_ANFANG: u32 = 2166136261;
 const FNV_PRIM: u32 = 16777619;

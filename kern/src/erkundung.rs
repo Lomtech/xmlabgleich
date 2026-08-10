@@ -26,7 +26,16 @@ pub struct Vorkommen {
     /// Nur für Blätter: verschiedene Werte, bis zur Grenze gezählt.
     pub verschiedene: usize,
     /// Ist der Pfad ein Blatt (trägt Werte) oder nur Struktur?
+    ///
+    /// Ein einziges leeres Vorkommen macht ein Strukturelement nicht zum
+    /// Blatt: `<INVESTMENT/>` unter vierhundert vollen ist ein leerer
+    /// Datensatz, kein Wert. Wurde das nicht unterschieden, fiel der
+    /// Datensatz aus allen Kandidatenlisten und die Erkennung landete eine
+    /// Ebene tiefer — genau der Fehler, gegen den die Geschwisterzahl
+    /// eingeführt worden war.
     pub blatt: bool,
+    /// Wie oft dieses Element Kinder hatte. `blatt` gilt nur bei 0.
+    pub mit_kindern: u64,
     /// Der Elternteil enthält ausschließlich gleichnamige Kinder — er ist
     /// ein reiner Sammelcontainer (`INVESTMENTS` → `INVESTMENT`).
     pub nur_kind: bool,
@@ -121,12 +130,47 @@ impl Erkundung {
             .filter(|(_, v)| !v.blatt && v.nur_kind && v.kindnamen > 1)
             .min_by(|a, b| a.1.tiefe.cmp(&b.1.tiefe).then_with(|| a.0.cmp(b.0)));
 
+        // Die Bauform darf den Vielgeschwister-Kandidaten nur überstimmen,
+        // wenn sie **auf demselben Ast** liegt und der Weg dorthin ein reiner
+        // Durchgang ist. Ohne diese Bedingung gewinnt jede Hülle: In
+        // `Envelope/Body/DATEN/…/SATZ` ist `Envelope/Body` flacher als der
+        // Datensatz und hat mehrere Kindnamen — abgeglichen worden wäre der
+        // Umschlag, ein einziger „Datensatz", und zwei völlig verschiedene
+        // Sendungen hätten gleich ausgesehen. Dasselbe für jeden Kopfbereich,
+        // der neben den Daten steht.
         let wahl = match (nach_bauform, nach_geschwistern) {
-            (Some(b), Some(g)) if b.1.tiefe < g.1.tiefe => b,
+            (Some(b), Some(g))
+                if b.1.tiefe < g.1.tiefe && self.durchgang_bis(b.0, g.0) =>
+            {
+                b
+            }
             (_, Some(g)) => g,
             (b, None) => b?,
         };
         Some((wahl.0.clone(), wahl.1.anzahl))
+    }
+
+    /// Ist `oben` ein Vorfahr von `unten`, und ist alles strikt dazwischen
+    /// eine reine Durchgangsstation (genau ein Kindname)?
+    ///
+    /// Nur dann beschreiben beide Kandidaten dieselbe Ebene der Daten — der
+    /// eine als Behälter, der andere als Inhalt. Steht der Bauform-Kandidat
+    /// auf einem anderen Ast, hat er mit dem Datensatz nichts zu tun.
+    fn durchgang_bis(&self, oben: &[u8], unten: &[u8]) -> bool {
+        if oben.len() >= unten.len() || !unten.starts_with(oben) || unten[oben.len()] != b'/' {
+            return false;
+        }
+        // Jedes Zwischenglied prüfen: `oben/x`, `oben/x/y`, … ohne `unten`.
+        let mut ende = oben.len() + 1;
+        while let Some(pos) = unten[ende..].iter().position(|c| *c == b'/') {
+            let zwischen = &unten[..ende + pos];
+            match self.pfade.get(zwischen) {
+                Some(v) if v.kindnamen == 1 => {}
+                _ => return false,
+            }
+            ende += pos + 1;
+        }
+        true
     }
 
     /// Elemente innerhalb des Datensatzes, die mehrfach nebeneinander
@@ -197,7 +241,10 @@ impl Beobachter for Erkundung {
 
         // Wie oft steht dieser Name unter dem aktuellen Elternelement schon?
         let geschwister = {
-            let ebene = self.kinder.last_mut().expect("Wurzelebene fehlt");
+            let ebene = match self.kinder.last_mut() {
+                Some(e) => e,
+                None => return,
+            };
             let z = ebene.entry(name.to_vec()).or_insert(0);
             *z += 1;
             *z
@@ -223,12 +270,18 @@ impl Beobachter for Erkundung {
     }
 
     fn element_ende(&mut self) {
+        // Mehr Schluss- als Anfangstags kommen in abgeschnittenen oder
+        // zusammenkopierten Dateien vor. Früher endete das in einer Panik
+        // und damit im Stillstand der Seite.
+        if self.pfad.is_empty() {
+            return;
+        }
         // Enthält dieses Element nur gleichnamige Kinder, ist es ein reiner
         // Sammelcontainer und sein Kind ein Datensatz-Kandidat. Die Wurzel-
         // ebene wird nie geschlossen, das Dokumentelement fällt darum von
         // selbst heraus.
         let (kindnamen, einziger) = {
-            let k = self.kinder.last().expect("Ebene fehlt");
+            let k = match self.kinder.last() { Some(k) => k, None => return };
             (
                 k.len(),
                 if k.len() == 1 {
@@ -242,6 +295,10 @@ impl Beobachter for Erkundung {
         if let Some(e) = self.pfade.get_mut(&hier) {
             if kindnamen > e.kindnamen {
                 e.kindnamen = kindnamen;
+            }
+            if kindnamen > 0 {
+                e.mit_kindern += 1;
+                e.blatt = false;
             }
         }
         if let Some(name) = einziger {
@@ -262,7 +319,9 @@ impl Beobachter for Erkundung {
                 0
             };
             if let Some(e) = self.pfade.get_mut(&p) {
-                e.blatt = true;
+                if e.mit_kindern == 0 {
+                    e.blatt = true;
+                }
             }
             let menge = self.werte.entry(p.clone()).or_default();
             if menge.len() < WERTE_GRENZE {
@@ -399,6 +458,75 @@ mod tests {
         let (pfad, n) = erkunde(&x).datensatz_vorschlag().unwrap();
         assert_eq!(String::from_utf8_lossy(&pfad), "STAMM/POSTEN/P");
         assert_eq!(n, 20);
+    }
+
+    /// Liegt der Bestand in einem Umschlag (SOAP, ISO 20022, ESB), ist der
+    /// Umschlag flacher als der Datensatz und trägt mehrere Kindnamen. Er
+    /// darf die Wahl trotzdem nicht an sich ziehen: Abgeglichen worden wäre
+    /// ein einziger „Datensatz", und zwei verschiedene Sendungen hätten
+    /// gleich ausgesehen.
+    #[test]
+    fn ein_umschlag_verdraengt_den_datensatz_nicht() {
+        let mut x = String::from("<Document><BkToCstmrStmt><GrpHdr><Id>1</Id></GrpHdr><Stmt><Id>s</Id><Acct>a</Acct>");
+        for i in 0..200 {
+            x.push_str(&format!("<Ntry><Amt>{i}</Amt><Dt>2026-01-01</Dt></Ntry>"));
+        }
+        x.push_str("</Stmt></BkToCstmrStmt></Document>");
+        let (pfad, n) = erkunde(&x).datensatz_vorschlag().unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&pfad),
+            "Document/BkToCstmrStmt/Stmt/Ntry"
+        );
+        assert_eq!(n, 200);
+    }
+
+    /// Kopfbereich neben den Daten: Auch er ist flach und hat mehrere Felder.
+    #[test]
+    fn ein_kopfbereich_verdraengt_den_datensatz_nicht() {
+        let mut x = String::from("<W><KOPF><INFO><A>1</A><B>2</B></INFO></KOPF><RUMPF><LISTE>");
+        for i in 0..500 {
+            x.push_str(&format!("<SATZ><ID>{i}</ID><WERT>{i}</WERT></SATZ>"));
+        }
+        x.push_str("</LISTE></RUMPF></W>");
+        let (pfad, n) = erkunde(&x).datensatz_vorschlag().unwrap();
+        assert_eq!(String::from_utf8_lossy(&pfad), "W/RUMPF/LISTE/SATZ");
+        assert_eq!(n, 500);
+    }
+
+    /// Ein einziger leerer Datensatz darf den Datensatz nicht zum Blatt
+    /// machen — sonst fällt er aus allen Kandidatenlisten und die Erkennung
+    /// landet eine Ebene tiefer.
+    #[test]
+    fn ein_leerer_datensatz_entwertet_die_ebene_nicht() {
+        let mut x = String::from("<L>");
+        for i in 0..40 {
+            x.push_str(&format!(
+                "<P><ID>{i}</ID><KS><K><A>x</A></K><K><A>y</A></K></KS></P>"
+            ));
+        }
+        x.push_str("<P/></L>");
+        let e = erkunde(&x);
+        let (pfad, _) = e.datensatz_vorschlag().unwrap();
+        assert_eq!(String::from_utf8_lossy(&pfad), "L/P");
+        // Und die Wiederholgruppe darunter bleibt eine Untertabelle.
+        let unter = e.untertabellen_vorschlaege(b"L/P");
+        assert!(
+            unter.iter().any(|(p, _, _)| p == b"KS/K"),
+            "KS/K muss Untertabelle bleiben: {:?}",
+            unter
+                .iter()
+                .map(|(p, _, _)| String::from_utf8_lossy(p).to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// Ein überzähliger Schlusstag kommt in abgeschnittenen Exporten vor. Er
+    /// hat die Erkundung zum Absturz gebracht; mit `panic = "abort"` heißt
+    /// das im Browser: die Seite bleibt ohne Meldung stehen.
+    #[test]
+    fn ueberzaehliger_schlusstag_bringt_nichts_zum_absturz() {
+        let e = erkunde("<A/></A><B><C>1</C></B>");
+        assert!(e.elemente > 0);
     }
 
     #[test]
