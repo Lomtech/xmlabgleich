@@ -990,7 +990,36 @@ function zeigeBefunde(e, einzelheiten) {
     befunde.filter(bf => bf.art.startsWith("Wert"))
            .map(bf => String(bf.datensatz).split("#")[0]));
 
+  // Ohne Schnittmenge ist jede weitere Zahl bedeutungslos, und der Grund liegt
+  // fast nie in den Daten, sondern in der Auswahl: falsches Gegenstück oder ein
+  // Schlüsselfeld, das auf beiden Seiten etwas anderes benennt. Statt „0" zu
+  // melden und den Nutzer raten zu lassen, wird beides nebeneinandergestellt.
+  if (!gemeinsame.length && sa.length && sb.length) {
+    platz.innerHTML = `<div class="karte">
+      <span class="marke schlecht">nichts gemeinsam</span>
+      <p>Die beiden Dateien haben <b>keinen einzigen Datensatz gemeinsam</b>:
+      ${zahl(sa.length)} in <b>${escape(dateien.a?.name ?? "der Quelle")}</b>,
+      ${zahl(sb.length)} in <b>${escape(dateien.b?.name ?? "dem Ziel")}</b>, und
+      kein <code>${escape($("schluessel").value)}</code> kommt auf beiden Seiten vor.</p>
+      <p>So sehen die Schlüssel aus — passen sie inhaltlich überhaupt zueinander?</p>
+      <table style="margin:.3rem 0">
+        <tr><th>Quelle</th><th>Ziel</th></tr>
+        ${Array.from({ length: Math.min(4, Math.max(sa.length, sb.length)) }, (_, i) =>
+          `<tr><td><code>${escape(sa[i] ?? "—")}</code></td>
+               <td><code>${escape(sb[i] ?? "—")}</code></td></tr>`).join("")}
+      </table>
+      <p class="hinweis">Sehen die Werte gleichartig aus, sind es schlicht verschiedene
+      Bestände. Sehen sie verschieden aus, benennt <code>${escape($("schluessel").value)}</code>
+      auf beiden Seiten nicht dasselbe — dann oben ein anderes Schlüsselfeld wählen.</p>
+    </div>`;
+    return;
+  }
+
   const rahmen = `<div class="karte">
+      <div class="hinweis" style="margin-bottom:.5rem">
+        <b>${escape(dateien.a?.name ?? "Quelle")}</b> (${zahl(e.a.datensaetze)} Datensätze)
+        gegen <b>${escape(dateien.b?.name ?? "Ziel")}</b> (${zahl(e.b.datensaetze)}),
+        wiedererkannt an <code>${escape($("schluessel").value)}</code></div>
       <table style="margin:0">
         <tr><td><b>${zahl(gemeinsame.length)}</b> Datensätze in beiden Dateien</td>
             <td class="zahl">${gemeinsame.length
